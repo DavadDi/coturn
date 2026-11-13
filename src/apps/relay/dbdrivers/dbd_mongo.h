@@ -1,4 +1,8 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * https://opensource.org/license/bsd-3-clause
+ *
  * Copyright (C) 2011, 2012, 2013 Citrix Systems
  * Copyright (C) 2014 Vivocha S.p.A.
  *
@@ -38,7 +42,7 @@
 extern "C" {
 #endif
 
-const turn_dbdriver_t * get_mongo_dbdriver(void);
+const turn_dbdriver_t *get_mongo_dbdriver(void);
 
 #ifdef __cplusplus
 }
@@ -46,4 +50,3 @@ const turn_dbdriver_t * get_mongo_dbdriver(void);
 
 #endif
 /// __DBD_MONGODB__///
-

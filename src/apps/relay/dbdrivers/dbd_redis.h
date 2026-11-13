@@ -1,4 +1,8 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * https://opensource.org/license/bsd-3-clause
+ *
  * Copyright (C) 2011, 2012, 2013 Citrix Systems
  * Copyright (C) 2014 Vivocha S.p.A.
  *
@@ -32,13 +36,16 @@
 #ifndef __DBD_REDIS__
 #define __DBD_REDIS__
 
+#include "../hiredis_libevent2.h"
 #include "dbdriver.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-const turn_dbdriver_t * get_redis_dbdriver(void);
+const turn_dbdriver_t *get_redis_dbdriver(void);
+redis_context_handle get_redis_async_connection(struct event_base *base, redis_stats_db_t *connection_string,
+                                                int delete_keys);
 
 #ifdef __cplusplus
 }
@@ -46,4 +53,3 @@ const turn_dbdriver_t * get_redis_dbdriver(void);
 
 #endif
 /// __DBD_REDIS__///
-

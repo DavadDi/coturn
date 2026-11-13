@@ -15,20 +15,15 @@ Coturn TURN server Docker image
 
 ## Supported tags and respective `Dockerfile` links
 
-- [`4.5.2-r8`, `4.5.2-r8-debian`, `4.5.2`, `4.5.2-debian`, `4.5`, `4.5-debian`, `4`, `4-debian`, `debian`, `latest`][d1]
-- [`4.5.2-r8-alpine`, `4.5.2-alpine`, `4.5-alpine`, `4-alpine`, `alpine`][d2]
+- [`4.19.0-r0`, `4.19.0-r0-debian`, `4.19.0`, `4.19.0-debian`, `4.19.0-trixie`, `4.19`, `4.19-debian`, `4.19-trixie`, `4`, `4-debian`, `4-trixie`, `debian`, `trixie`, `latest`][d1]
+- [`4.19.0-r0-alpine`, `4.19.0-alpine`, `4.19.0-alpine3.24`, `4.19-alpine`, `4.19-alpine3.24`, `4-alpine`, `4-alpine3.24`, `alpine`, `alpine3.24`][d2]
 
 
 
 
 ## Supported platforms
 
-- `linux/amd64`
-- `linux/arm64`
-- `linux/arm/v6`
-- `linux/arm/v7`
-- `linux/ppc64le`
-- `linux/s390x`
+- `linux`: `amd64`, `arm32v6`, `arm32v7`, `arm64v8`, `i386`, `ppc64le`, `s390x`
 
 
 
@@ -46,7 +41,7 @@ The TURN Server is a VoIP media traffic NAT traversal server and gateway. It can
 
 To run Coturn TURN server just start the container: 
 ```bash
-docker run -d -p 3478:3478 -p 3478:3478/udp -p 49152-65535:49152-65535/udp coturn/coturn
+docker run -d -p 3478:3478 -p 3478:3478/udp -p 5349:5349 -p 5349:5349/udp -p 49152-65535:49152-65535/udp coturn/coturn
 ```
 
 
@@ -56,10 +51,8 @@ As per [RFC 5766 Section 6.2], these are the ports that the TURN server will use
 
 You can change them with `min-port` and `max-port` Coturn configuration options:
 ```bash
-docker run -d -p 3478:3478 -p 3478:3478/udp -p 49160-49200:49160-49200/udp \
-       coturn/coturn -n --log-file=stdout \
-                        --external-ip='$(detect-external-ip)' \
-                        --min-port=49160 --max-port=49200
+docker run -d -p 3478:3478 -p 3478:3478/udp -p 5349:5349 -p 5349:5349/udp -p 49160-49200:49160-49200/udp \
+       coturn/coturn --min-port=49160 --max-port=49200
 ```
 
 Or just use the host network directly (__recommended__, as Docker [performs badly with large port ranges][7]):
@@ -87,8 +80,7 @@ By default, default Coturn configuration and CLI options provided in the `CMD` [
                -n --log-file=stdout \
                --min-port=49160 --max-port=49200 \
                --lt-cred-mech --fingerprint \
-               --no-multicast-peers --no-cli \
-               --no-tlsv1 --no-tlsv1_1 \
+               --no-multicast-peers \
                --realm=my.realm.org \  
     ```
     
@@ -102,12 +94,15 @@ By default, default Coturn configuration and CLI options provided in the `CMD` [
 
 #### Automatic detection of external IP
 
-`detect-external-ip` binary may be used to automatically detect external IP of TURN server in runtime. It's okay to use it multiple times (the value will be evaluated only once).
+`detect-external-ip` binary may be used to automatically detect external IP of TURN server in runtime.
+To add ` --external-ip=<detected external IP>` using `detect-external-ip` as argument for `turnserver`, set envronment variable `DETECT_EXTERNAL_IP`. Also, environment variables `DETECT_RELAY_IP`, `DETECT_EXTERNAL_IPV6` and `DETECT_RELAY_IPV6` can be used for adding arguments ` --external-ip=<detected external IP>` or ` --relay-ip=<detected external IP>`.
+It's okay to use it multiple times (the value will be evaluated only once).
 ```bash
-docker run -d --network=host coturn/coturn \
-           -n --log-file=stdout \
-           --external-ip='$(detect-external-ip)' \
-           --relay-ip='$(detect-external-ip)'
+docker run -d --network=host \
+           -e DETECT_EXTERNAL_IP=yes \
+           -e DETECT_RELAY_IP=yes \
+           coturn/coturn \
+           -n --log-file=stdout
 ```
 
 By default, [IPv4] address is discovered. In case you need an [IPv6] one, specify the `--ipv6` flag:
@@ -134,38 +129,73 @@ docker run -d --network=host --mount type=tmpfs,destination=/var/lib/coturn cotu
 ## Image versions
 
 
-### `X`
+### `alpine`
 
-Latest tag of `X` Coturn's major version.
+This image is based on the popular [Alpine Linux project][1], available in [the alpine official image][2]. [Alpine Linux][1] is much smaller than most distribution base images (~5MB), and thus leads to much slimmer images in general.
 
-
-### `X.Y`
-
-Latest tag of `X` Coturn's minor version.
+This variant is highly recommended when final image size being as small as possible is desired. The main caveat to note is that it does use [musl libc][4] instead of [glibc and friends][5], so certain software might run into issues depending on the depth of their libc requirements. However, most software doesn't have an issue with this, so this variant is usually a very safe choice. See [this Hacker News comment thread][6] for more discussion of the issues that might arise and some pro/con comparisons of using [Alpine][1]-based images.
 
 
-### `X.Y.Z` or `X.Y.Z.W`
+### `<X>`
 
-Latest tag version of a concrete `X.Y.Z` or `X.Y.Z.W` version of Coturn.
+Latest tag of the latest major `X` Coturn version.
+
+This is a multi-platform image.
 
 
-### `X.Y.Z-rN` or `X.Y.Z.W-rN`
+### `<X.Y>`
 
-Concrete `N` image revision tag of a Coturn's concrete `X.Y.Z` or `X.Y.Z.W` version.
+Latest tag of the latest minor `X.Y` Coturn version.
+
+This is a multi-platform image.
+
+
+### `<X.Y.Z>`/`<X.Y.Z.W>`
+
+Latest tag of the concrete `X.Y.Z` (or `X.Y.Z.W`) Coturn version.
+
+This is a multi-platform image.
+
+
+### `<X.Y.Z>-r<N>`/`<X.Y.Z.W>-r<N>`
+
+Concrete `N` image revision tag of the concrete `X.Y.Z` (or `X.Y.Z.W`) Coturn version.
+
+Once built, it's never updated.
+
+This is a multi-platform image.
+
+
+### `<X.Y.Z>-r<N>-<dist>`/`<X.Y.Z.W>-r<N>-<dist>`
+
+Concrete `N` image revision tag of the concrete `X.Y.Z` (or `X.Y.Z.W`) Coturn version on the concrete `dist` (`alpine` or `debian`).
+
+Once built, it's never updated.
+
+This is a multi-platform image.
+
+
+### `<X.Y.Z>-r<N>-<dist>-<arch>`/`<X.Y.Z.W>-r<N>-<dist>-<arch>`
+
+Concrete `N` image revision tag of the concrete `X.Y.Z` (or `X.Y.Z.W`) Coturn version on the concrete `dist` (`alpine` or `debian`) and `arch`.
 
 Once build, it's never updated.
 
-
-### `alpine`
-
-This image is based on the popular [Alpine Linux project][1], available in [the alpine official image][2]. Alpine Linux is much smaller than most distribution base images (~5MB), and thus leads to much slimmer images in general.
-
-This variant is highly recommended when final image size being as small as possible is desired. The main caveat to note is that it does use [musl libc][4] instead of [glibc and friends][5], so certain software might run into issues depending on the depth of their libc requirements. However, most software doesn't have an issue with this, so this variant is usually a very safe choice. See [this Hacker News comment thread][6] for more discussion of the issues that might arise and some pro/con comparisons of using Alpine-based images.
+This is a single-platform image.
 
 
-### `edge`
+### `edge-<dist>`
 
-Contains build of Coturn's latest `master` branch.
+Latest tag of the latest `master` branch of Coturn on the concrete `dist` (`alpine` or `debian`).
+
+This is a multi-platform image.
+
+
+### `edge-<dist>-<arch>`
+
+Latest tag of the latest `master` branch of Coturn on the concrete `dist` (`alpine` or `debian`) and `arch`.
+
+This is a single-platform image.
 
 
 

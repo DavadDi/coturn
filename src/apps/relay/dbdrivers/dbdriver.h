@@ -1,4 +1,8 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * https://opensource.org/license/bsd-3-clause
+ *
  * Copyright (C) 2011, 2012, 2013 Citrix Systems
  * Copyright (C) 2014 Vivocha S.p.A.
  *
@@ -59,28 +63,31 @@ typedef struct _turn_dbdriver_t {
   int (*add_origin)(uint8_t *origin, uint8_t *realm);
   int (*del_origin)(uint8_t *origin);
   int (*list_origins)(uint8_t *realm, secrets_list_t *origins, secrets_list_t *realms);
-  int (*set_realm_option_one)(uint8_t *realm, unsigned long value, const char* opt);
+  int (*set_realm_option_one)(uint8_t *realm, unsigned long value, const char *opt);
   int (*list_realm_options)(uint8_t *realm);
-  void (*auth_ping)(void * rch);
-  int (*get_ip_list)(const char *kind, ip_range_list_t * list);
-  int (*set_permission_ip)(const char *kind, uint8_t *realm, const char* ip, int del);
-  void (*reread_realms)(secrets_list_t * realms_list);
+  void (*auth_ping)(void *rch);
+  int (*get_ip_list)(const char *kind, ip_range_list_t *list);
+  int (*set_permission_ip)(const char *kind, uint8_t *realm, const char *ip, int del);
+  void (*reread_realms)(secrets_list_t *realms_list);
   int (*set_oauth_key)(oauth_key_data_raw *key);
   int (*get_oauth_key)(const uint8_t *kid, oauth_key_data_raw *key);
   int (*del_oauth_key)(const uint8_t *kid);
-  int (*list_oauth_keys)(secrets_list_t *kids,secrets_list_t *teas,secrets_list_t *tss,secrets_list_t *lts,secrets_list_t *realms);
+  int (*list_oauth_keys)(secrets_list_t *kids, secrets_list_t *teas, secrets_list_t *tss, secrets_list_t *lts,
+                         secrets_list_t *realms);
   int (*get_admin_user)(const uint8_t *usname, uint8_t *realm, password_t pwd);
   int (*set_admin_user)(const uint8_t *usname, const uint8_t *realm, const password_t pwd);
   int (*del_admin_user)(const uint8_t *usname);
   int (*list_admin_users)(int no_print);
   void (*disconnect)(void);
+  void (*report_usage)(void *);
 } turn_dbdriver_t;
 
 /////////// USER DB CHECK //////////////////
 
-int convert_string_key_to_binary(char* keysource, hmackey_t key, size_t sz);
-persistent_users_db_t * get_persistent_users_db(void);
-const turn_dbdriver_t * get_dbdriver(void);
+void convert_string_key_to_binary(const char *keysource, hmackey_t key, size_t sz);
+persistent_users_db_t *get_persistent_users_db(void);
+const turn_dbdriver_t *get_dbdriver(void);
+char *sanitize_userdb_string(char *udb);
 
 ////////////////////////////////////////////
 
@@ -90,4 +97,3 @@ const turn_dbdriver_t * get_dbdriver(void);
 
 #endif
 /// __DBDRIVER__///
-

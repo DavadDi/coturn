@@ -2,75 +2,7 @@
 # Dockerfile of coturn/coturn:alpine Docker image.
 #
 
-ARG alpine_ver=3.15
-
-
-
-
-#
-# Stage 'dist-libprom' creates prometheus-client-c distribution.
-#
-
-# We compile prometheus-client-c from sources, because Alpine doesn't provide
-# it as its package yet.
-#
-# TODO: Re-check this to be present in packages on next Alpine major version update.
-
-# https://hub.docker.com/_/alpine
-FROM alpine:${alpine_ver} AS dist-libprom
-
-# Install tools for building.
-RUN apk update \
- && apk add --no-cache \
-        ca-certificates cmake g++ git make \
- && update-ca-certificates
-
-# Install prometheus-client-c build dependencies.
-RUN apk add --no-cache \
-        libmicrohttpd-dev
-
-# Prepare prometheus-client-c sources for building.
-ARG prom_ver=0.1.3
-RUN mkdir -p /build/ && cd /build/ \
- && git init \
- && git remote add origin https://github.com/digitalocean/prometheus-client-c \
- && git fetch --depth=1 origin "v${prom_ver}" \
- && git checkout FETCH_HEAD
-
-# Build libprom.so from sources.
-RUN mkdir -p /build/prom/build/ && cd /build/prom/build/ \
- && TEST=0 cmake -G "Unix Makefiles" \
-                 -DCMAKE_INSTALL_PREFIX=/usr \
-                 -DCMAKE_SKIP_BUILD_RPATH=TRUE \
-                 -DCMAKE_C_FLAGS="-DPROM_LOG_ENABLE -g -O3" \
-                 .. \
- && make
-
-# Build libpromhttp.so from sources.
-RUN mkdir -p /build/promhttp/build/ && cd /build/promhttp/build/ \
- # Fix compiler warning: -Werror=incompatible-pointer-types
- && sed -i 's/\&promhttp_handler/(MHD_AccessHandlerCallback)\&promhttp_handler/' \
-           /build/promhttp/src/promhttp.c \
- && TEST=0 cmake -G "Unix Makefiles" \
-                 -DCMAKE_INSTALL_PREFIX=/usr \
-                 -DCMAKE_SKIP_BUILD_RPATH=TRUE \
-                 -DCMAKE_C_FLAGS="-g -O3" \
-                 .. \
- && make VERBOSE=1
-
-# Install prometheus-client-c.
-RUN LIBS_DIR=/out/$(dirname $(find /usr/ -name libc.so)) \
- && mkdir -p $LIBS_DIR/ \
- && cp -rf /build/prom/build/libprom.so \
-           /build/promhttp/build/libpromhttp.so \
-       $LIBS_DIR/ \
- && mkdir -p /out/usr/include/ \
- && cp -rf /build/prom/include/* \
-           /build/promhttp/include/* \
-       /out/usr/include/ \
- # Preserve license file.
- && mkdir -p /out/usr/share/licenses/prometheus-client-c/ \
- && cp /build/LICENSE /out/usr/share/licenses/prometheus-client-c/
+ARG alpine_ver=3.24
 
 
 
@@ -98,14 +30,11 @@ RUN apk add --no-cache \
         mongo-c-driver-dev \
         libmicrohttpd-dev
 
-# Install prometheus-client-c distribution.
-COPY --from=dist-libprom /out/ /
-
 # Prepare local Coturn sources for building.
 COPY CMakeLists.txt \
      configure \
      INSTALL \
-     LICENSE LICENSE.OpenSSL \
+     LICENSE \
      make-man.sh Makefile.in \
      postinstall.txt \
      README.turn* \
@@ -119,18 +48,19 @@ WORKDIR /app/
 
 # Use Coturn sources from Git if `coturn_git_ref` is specified.
 ARG coturn_git_ref=HEAD
+ARG coturn_github_url=https://github.com
+ARG coturn_github_repo=coturn/coturn
+
 RUN if [ "${coturn_git_ref}" != 'HEAD' ]; then true \
  && rm -rf /app/* \
  && git init \
- && git remote add origin https://github.com/coturn/coturn \
+ && git remote add origin ${coturn_github_url}/${coturn_github_repo} \
  && git fetch --depth=1 origin "${coturn_git_ref}" \
  && git checkout FETCH_HEAD \
  && true; fi
 
 # Build Coturn from sources.
-# TODO: Remove this symlink with next Coturn release detecting MySQL libs correctly.
-RUN ln -s /usr/lib/pkgconfig/libmariadb.pc /usr/lib/pkgconfig/mariadb.pc \
- && ./configure --prefix=/usr \
+RUN CFLAGS="-O3" ./configure --prefix=/usr \
                 --turndbdir=/var/lib/coturn \
                 --disable-rpath \
                 --sysconfdir=/etc/coturn \
@@ -153,15 +83,11 @@ RUN mkdir -p /out/ \
 
 # Install helper tools of Docker image.
 COPY docker/coturn/rootfs/ /out/
-COPY docker/coturn/alpine/rootfs/ /out/
 RUN chmod +x /out/usr/local/bin/docker-entrypoint.sh \
              /out/usr/local/bin/detect-external-ip.sh
 RUN ln -s /usr/local/bin/detect-external-ip.sh \
           /out/usr/local/bin/detect-external-ip
 RUN chown -R nobody:nogroup /out/var/lib/coturn/
-
-# Re-export prometheus-client-c distribution.
-COPY --from=dist-libprom /out/ /out/
 
 
 
@@ -173,8 +99,6 @@ COPY --from=dist-libprom /out/ /out/
 # https://hub.docker.com/_/alpine
 FROM alpine:${alpine_ver} AS runtime
 
-LABEL org.opencontainers.image.source="https://github.com/coturn/coturn"
-
 # Update system packages.
 RUN apk update \
  && apk upgrade \
@@ -183,11 +107,14 @@ RUN apk update \
  # Install Coturn dependencies.
  && apk add --no-cache \
         libevent \
-        libcrypto1.1 libssl1.1 \
+        libcrypto3 libssl3 \
         libpq mariadb-connector-c sqlite-libs \
         hiredis \
         mongo-c-driver \
         libmicrohttpd \
+ # Install `bash` for `docker-entrypoint.sh`.
+ && apk add --no-cache \
+        bash \
  # Install `dig` tool for `detect-external-ip.sh`.
  && apk add --no-cache \
         bind-tools \

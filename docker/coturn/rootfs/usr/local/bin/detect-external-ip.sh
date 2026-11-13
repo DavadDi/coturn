@@ -85,6 +85,9 @@ if [ "$CFG_IPV4" = "true" ]; then
   is_valid_ip() {
     # Check if the input looks like an IPv4 address.
     # Doesn't check if the actual values are valid; assumes they are.
+    if [ $(echo "$1" | wc -l) -ne 1 ]; then
+      return 1
+    fi
     echo "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
   }
 else
@@ -96,13 +99,16 @@ else
     # Check if the input looks like an IPv6 address.
     # It's almost impossible to check the IPv6 representation because it
     # varies wildly, so just check that there are at least 2 colons.
+    if [ $(echo "$1" | wc -l) -ne 1 ]; then
+      return 1
+    fi
     [ "$(echo "$1" | awk -F':' '{print NF-1}')" -ge 2 ]
   }
 fi
 
 IFS="$(printf '\nx')" && IFS="${IFS%x}"
 for COMMAND in $COMMANDS; do
-  if IP="$(eval "$COMMAND")" && is_valid_ip "$IP"; then
+  if IP="$(eval "$COMMAND 2>/dev/null")" && is_valid_ip "$IP"; then
     printf '%s' "$IP"
     exit 0
   fi

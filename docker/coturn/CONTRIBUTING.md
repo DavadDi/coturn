@@ -23,7 +23,7 @@ Contribution Guide
 At the moment `coturn/coturn` Docker image's [workflow is automated][1] via [GitHub Actions] in the following manner:
 
 - On each push the image is built and tested.  
-  This helps to track image regressions due to changes in codebase.
+  This helps to track image regressions due to changes in the codebase.
 
 - Image is built and tested automatically from `master` branch on weekly basis.  
   This helps to track image regressions due to changes in parent OS images (`debian`, `alpine`), their system packages, and other dependencies.
@@ -43,14 +43,13 @@ At the moment `coturn/coturn` Docker image's [workflow is automated][1] via [Git
 
 To produce a new release (version tag) of `coturn/coturn` Docker image, perform the following steps:
 
-1. Upgrade the image version correctly in [`Makefile`] by bumping up either the `COTURN_VER` (if Coturn has changed it version) or the `BUILD_REV` (if anything else in the image has been changed). If the `COTURN_VER` has changed, the `BUILD_REV` may be reset to `0`.
+1. Upgrade the image version correctly in [`Makefile`] by bumping up either the `COTURN_VER` (if Coturn has changed it version) or the `BUILD_REV` (if anything else in the image has been changed). If the `COTURN_VER` has changed, the `BUILD_REV` may be reset to `0` (DO NOT reset when `ALPINE_VER`/`DEBIAN_VER` changes).
 
 2. Complete an existing [CHANGELOG] or fill up a new one for the new version declared in [`Makefile`].
 
 3. Update [README] with the new version declared in [`Makefile`].
 
 4. Perform a `make release` command inside the `docker/coturn/` directory.
-
 
 
 

@@ -1,8 +1,49 @@
-# Author: Kang Lin (kl222@126.com)
+##
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# https://opensource.org/license/bsd-3-clause
+#
+# Copyright (C) 2021 Kang Lin <kl222@126.com>
+#
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. Neither the name of the project nor the names of its contributors
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE PROJECT OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+##
 
 project(turnserver)
 
-set(HEAD_FILES
+check_function_exists("pthread_barrier_init" HAVE_THREAD_BARRIERS)
+if(NOT HAVE_THREAD_BARRIERS)
+    list(APPEND turnserver_DEFINED TURN_NO_THREAD_BARRIERS)
+endif()
+
+if(MSVC OR MINGW)
+    list(APPEND turnserver_LIBS iphlpapi)
+endif()
+
+set(HEADER_FILES
     tls_listener.h
     mainrelay.h
     turn_admin_server.h
@@ -12,7 +53,10 @@ set(HEAD_FILES
     ns_sm.h
     turn_ports.h
     userdb.h
+    mp_peer_table.h
     dbdrivers/dbdriver.h
+    prom_server.h
+    dbdrivers/dbd_redis.h
     )
 
 set(SOURCE_FILES
@@ -23,18 +67,22 @@ set(SOURCE_FILES
     tls_listener.c
     dtls_listener.c
     ns_ioalib_engine_impl.c
+    mp_peer_table.c
     turn_ports.c
     http_server.c
+    http_buffer.c
     acme.c
     userdb.c
     dbdrivers/dbdriver.c
+    prom_server.c
+    dbdrivers/dbd_redis.c
     )
 
 find_package(SQLite)
 if(SQLite_FOUND)
     list(APPEND turnserver_LIBS SQLite::sqlite)
     list(APPEND SOURCE_FILES dbdrivers/dbd_sqlite.c)
-    list(APPEND HEAD_FILES dbdrivers/dbd_sqlite.h)
+    list(APPEND HEADER_FILES dbdrivers/dbd_sqlite.h)
 else()
     list(APPEND turnserver_DEFINED TURN_NO_SQLITE)
 endif()
@@ -43,67 +91,133 @@ find_package(PostgreSQL)
 if(PostgreSQL_FOUND)
     list(APPEND turnserver_LIBS PostgreSQL::pq)
     list(APPEND SOURCE_FILES dbdrivers/dbd_pgsql.c)
-    list(APPEND HEAD_FILES dbdrivers/dbd_pgsql.h)
+    list(APPEND HEADER_FILES dbdrivers/dbd_pgsql.h)
 else()
     list(APPEND turnserver_DEFINED TURN_NO_PQ)
 endif()
 
-find_package(MySQL)
-if(MySQL_FOUND)
+option(WITH_MYSQL "Use mysql" ON)
+if(WITH_MYSQL)
+    find_package(MySQL)
+    if(MySQL_FOUND)
     list(APPEND turnserver_LIBS MySQL::mysql)
     list(APPEND SOURCE_FILES dbdrivers/dbd_mysql.c)
-    list(APPEND HEAD_FILES dbdrivers/dbd_mysql.h)
+      list(APPEND HEADER_FILES dbdrivers/dbd_mysql.h)
+    else()
+        list(APPEND turnserver_DEFINED TURN_NO_MYSQL)
+    endif()
 else()
     list(APPEND turnserver_DEFINED TURN_NO_MYSQL)
 endif()
 
-find_package(mongo)
-if(mongo_FOUND)
-    list(APPEND turnserver_LIBS mongo)
+if(WIN32 OR APPLE)
+	find_package(mongoc-1.0)
+	if(mongoc-1.0_FOUND)
+		list(APPEND turnserver_LIBS mongo::mongoc_shared)
     list(APPEND SOURCE_FILES dbdrivers/dbd_mongo.c)
-    list(APPEND HEAD_FILES dbdrivers/dbd_mongo.h)
+		list(APPEND HEADER_FILES dbdrivers/dbd_mongo.h)
+	else()
+		list(APPEND turnserver_DEFINED TURN_NO_MONGO)
+	endif()
 else()
-    list(APPEND turnserver_DEFINED TURN_NO_MONGO)
+	find_package(mongo)
+	if(mongo_FOUND)
+        list(APPEND turnserver_LIBS mongo)
+        list(APPEND SOURCE_FILES dbdrivers/dbd_mongo.c)
+		list(APPEND HEADER_FILES dbdrivers/dbd_mongo.h)
+	else()
+        list(APPEND turnserver_DEFINED TURN_NO_MONGO)
+	endif()
 endif()
 
-find_package(hiredis)
-if(hiredis_FOUND)
-    list(APPEND turnserver_LIBS hiredis::hiredis)
-    list(APPEND SOURCE_FILES dbdrivers/dbd_redis.c)
-    list(APPEND HEAD_FILES dbdrivers/dbd_redis.h)
+pkg_check_modules(HIREDIS IMPORTED_TARGET hiredis)
+if(HIREDIS_FOUND)
+    list(APPEND turnserver_LIBS PkgConfig::HIREDIS)
+    list(APPEND SOURCE_FILES hiredis_libevent2.c dbdrivers/dbd_redis.c dbdrivers/dbd_redis_conninfo.c)
+    list(APPEND HEADER_FILES hiredis_libevent2.h dbdrivers/dbd_redis.h dbdrivers/dbd_redis_conninfo.h)
+    # Optional TLS transport to Redis, provided by the separate hiredis_ssl library.
+    pkg_check_modules(HIREDIS_SSL IMPORTED_TARGET hiredis_ssl)
+    if(HIREDIS_SSL_FOUND)
+        list(APPEND turnserver_LIBS PkgConfig::HIREDIS_SSL)
+        list(APPEND turnserver_DEFINED TURN_HAVE_HIREDIS_SSL)
+    endif()
 else()
     list(APPEND turnserver_DEFINED TURN_NO_HIREDIS)
 endif()
 
-find_package(libsystemd)
-if(libsystemd_FOUND)
+if(UNIX AND (NOT APPLE))
+    find_package(libsystemd)
+    if(NOT libsystemd_FOUND)
+        list(APPEND turnserver_DEFINED TURN_NO_SYSTEMD)
+    endif()
 else()
     list(APPEND turnserver_DEFINED TURN_NO_SYSTEMD)
 endif()
 
-find_package(Prometheus)
-if(Prometheus_FOUND)
-    list(APPEND SOURCE_FILES prom_server.c)
-    list(APPEND HEAD_FILES prom_server.h)
-else()
+# Prometheus exporter.
+#
+# coturn ships a minimal, self-contained Prometheus client under
+# src/prometheus and builds it straight from these sources. The exporter is
+# always compiled in; the runtime --prometheus flag controls whether it is
+# actually started. libmicrohttpd serves the /metrics endpoint and is a
+# required build dependency (provided by vcpkg on Windows) -- except in the
+# fuzzing build (FUZZER), whose image has no libmicrohttpd and no use for the
+# metrics endpoint.
+find_package(MicroHTTPD)
+if(MicroHTTPD_FOUND)
+    list(APPEND SOURCE_FILES ${CMAKE_SOURCE_DIR}/src/prometheus/prom.c)
+    list(APPEND HEADER_FILES ${CMAKE_SOURCE_DIR}/src/prometheus/prom.h)
+    list(APPEND turnserver_LIBS ${MicroHTTPD_LIBRARIES})
+    list(APPEND turnserver_include_dirs
+        ${CMAKE_SOURCE_DIR}/src/prometheus
+        ${MicroHTTPD_INCLUDE_DIRS})
+elseif(FUZZER)
+    message(STATUS "libmicrohttpd not found; building fuzzing targets without the Prometheus exporter")
     list(APPEND turnserver_DEFINED TURN_NO_PROMETHEUS)
+else()
+    message(FATAL_ERROR "libmicrohttpd not found. Install libmicrohttpd-dev "
+        "(or set MicroHTTPD_ROOT). See docs/Prometheus.md")
 endif()
 
-add_executable(${PROJECT_NAME} ${SOURCE_FILES} ${HEAD_FILES})
+list(APPEND turnserver_DEFINED TURN_NO_SCTP)
+
+message("turnserver_LIBS:${turnserver_LIBS}")
+
+add_executable(${PROJECT_NAME} ${SOURCE_FILES} ${HEADER_FILES})
 target_link_libraries(${PROJECT_NAME} PRIVATE turn_server ${turnserver_LIBS})
 target_include_directories(${PROJECT_NAME} PRIVATE ${turnserver_include_dirs})
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${turnserver_DEFINED})
-
-add_custom_target(turnadmin ALL
-    COMMAND 
-        ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE_NAME:${PROJECT_NAME}> turnadmin
-    DEPENDS ${PROJECT_NAME})
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
 
 INSTALL(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         COMPONENT Runtime
     )
 
-INSTALL(FILES $<TARGET_FILE_DIR:${PROJECT_NAME}>/turnadmin
+install(DIRECTORY
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/
+    DESTINATION DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        COMPONENT Runtime
+        USE_SOURCE_PERMISSIONS
+    )
+
+if(WIN32)
+    add_custom_target(turnadmin ALL
+        COMMAND
+            ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> $<TARGET_FILE_DIR:${PROJECT_NAME}>/turnadmin.exe
+        DEPENDS ${PROJECT_NAME})
+    INSTALL(FILES $<TARGET_FILE_DIR:${PROJECT_NAME}>/turnadmin.exe
     DESTINATION "${CMAKE_INSTALL_BINDIR}"
             COMPONENT Runtime)
+else()
+    add_custom_target(turnadmin ALL
+        COMMAND
+            ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE_NAME:${PROJECT_NAME}> $<TARGET_FILE_DIR:${PROJECT_NAME}>/turnadmin
+        DEPENDS ${PROJECT_NAME})
+    INSTALL(FILES $<TARGET_FILE_DIR:${PROJECT_NAME}>/turnadmin
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            COMPONENT Runtime
+		)
+endif()

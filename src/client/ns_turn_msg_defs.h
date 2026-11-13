@@ -1,4 +1,8 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * https://opensource.org/license/bsd-3-clause
+ *
  * Copyright (C) 2011, 2012, 2013 Citrix Systems
  *
  * All rights reserved.
@@ -31,7 +35,9 @@
 #ifndef __LIB_TURN_MSG_DEFS__
 #define __LIB_TURN_MSG_DEFS__
 
-#include "ns_turn_msg_defs_experimental.h"
+#include "ns_turn_defs.h" // for turn_time_t
+
+#include "ns_turn_msg_defs_experimental.h" // IWYU pragma: export
 
 ///////////////////////////////////////////
 // http://www.iana.org/assignments/stun-parameters/stun-parameters.xhtml
@@ -40,24 +46,28 @@
 #define STUN_HEADER_LENGTH (20)
 #define STUN_CHANNEL_HEADER_LENGTH (4)
 
-#define STUN_MAX_USERNAME_SIZE (512)
-#define STUN_MAX_REALM_SIZE (127)
-#define STUN_MAX_NONCE_SIZE (127)
+/* Longest valid value in bytes, not in characters. RFC 8489 Section 14.3 caps
+ * USERNAME at fewer than 509 bytes; Sections 14.9 and 14.10 cap REALM and NONCE
+ * at fewer than 128 characters, which is up to 763 bytes once UTF-8 encoded.
+ * Buffers sized from these add one byte for the terminator. */
+#define STUN_MAX_USERNAME_SIZE (508)
+#define STUN_MAX_REALM_SIZE (763)
+#define STUN_MAX_NONCE_SIZE (763)
 #define STUN_MAX_SERVER_NAME_SIZE (1025)
 #define STUN_MAX_PWD_SIZE (256)
 #define AUTH_SECRET_SIZE STUN_MAX_PWD_SIZE
 
 #define STUN_MAGIC_COOKIE (0x2112A442)
 
-#define IS_STUN_REQUEST(msg_type)       (((msg_type) & 0x0110) == 0x0000)
-#define IS_STUN_INDICATION(msg_type)    (((msg_type) & 0x0110) == 0x0010)
-#define IS_STUN_SUCCESS_RESP(msg_type)  (((msg_type) & 0x0110) == 0x0100)
-#define IS_STUN_ERR_RESP(msg_type)      (((msg_type) & 0x0110) == 0x0110)
+#define IS_STUN_REQUEST(msg_type) (((msg_type)&0x0110) == 0x0000)
+#define IS_STUN_INDICATION(msg_type) (((msg_type)&0x0110) == 0x0010)
+#define IS_STUN_SUCCESS_RESP(msg_type) (((msg_type)&0x0110) == 0x0100)
+#define IS_STUN_ERR_RESP(msg_type) (((msg_type)&0x0110) == 0x0110)
 
-#define GET_STUN_REQUEST(msg_type)      (msg_type & 0xFEEF)
-#define GET_STUN_INDICATION(msg_type)   ((msg_type & 0xFEEF)|0x0010)
-#define GET_STUN_SUCCESS_RESP(msg_type)  ((msg_type & 0xFEEF)|0x0100)
-#define GET_STUN_ERR_RESP(msg_type)      (msg_type | 0x0110)
+#define GET_STUN_REQUEST(msg_type) (msg_type & 0xFEEF)
+#define GET_STUN_INDICATION(msg_type) ((msg_type & 0xFEEF) | 0x0010)
+#define GET_STUN_SUCCESS_RESP(msg_type) ((msg_type & 0xFEEF) | 0x0100)
+#define GET_STUN_ERR_RESP(msg_type) (msg_type | 0x0110)
 
 /* Lifetimes: */
 #define STUN_DEFAULT_ALLOCATE_LIFETIME (600)
@@ -130,7 +140,27 @@
 #define STUN_ATTRIBUTE_CONNECTION_ID (0x002A)
 /* <<== RFC 6062 */
 
-#define STUN_VALID_CHANNEL(chn) ((chn)>=0x4000 && (chn)<=0x7FFF)
+/* RFC 8656 ==>> */
+#define STUN_ATTRIBUTE_ADDITIONAL_ADDRESS_FAMILY (0x8000)
+#define STUN_ATTRIBUTE_ADDRESS_ERROR_CODE (0x8001)
+/* <<== RFC 8656 */
+
+/* Channel-number ranges.
+ *
+ * RFC 8656 par. 12 narrows the allowed ChannelBind range to 0x4000-0x4FFF;
+ * 0x5000-0xFFFF is reserved so that the first byte of a ChannelData message
+ * stays inside the [64..79] slot that RFC 7983 assigns to TURN in the
+ * DTLS-SRTP demultiplexing scheme. STUN_VALID_CHANNEL_BIND is that strict
+ * range: use it wherever a channel number is being established (ChannelBind,
+ * on both the client and the server side).
+ *
+ * STUN_VALID_CHANNEL keeps the RFC 5766 range (0x4000-0x7FFF) and is the
+ * lenient receive/framing-side check: ChannelData from legacy RFC 5766 peers
+ * must still be recognized as ChannelData so that stream framing stays in
+ * sync (the server option --rfc5766-channel-numbers re-enables binding in
+ * the legacy range). */
+#define STUN_VALID_CHANNEL_BIND(chn) ((chn) >= 0x4000 && (chn) <= 0x4FFF)
+#define STUN_VALID_CHANNEL(chn) ((chn) >= 0x4000 && (chn) <= 0x7FFF)
 
 ///////// extra values //////////////////
 
@@ -158,30 +188,32 @@
 #define MAXSHASIZE (128)
 
 enum _SHATYPE {
-	SHATYPE_ERROR = -1,
-	SHATYPE_DEFAULT=0,
-	SHATYPE_SHA1=SHATYPE_DEFAULT,
-	SHATYPE_SHA256,
-	SHATYPE_SHA384,
-	SHATYPE_SHA512
+  SHATYPE_ERROR = -1,
+  SHATYPE_DEFAULT = 0,
+  SHATYPE_SHA1 = SHATYPE_DEFAULT,
+  SHATYPE_SHA256,
+  SHATYPE_SHA384,
+  SHATYPE_SHA512
 };
 
 typedef enum _SHATYPE SHATYPE;
 
-#define shatype_name(sht) ((sht == SHATYPE_SHA1) ? "SHA1" : ((sht == SHATYPE_SHA256) ? "SHA256" : ((sht == SHATYPE_SHA384) ? "SHA384" : "SHA512")))
+#define shatype_name(sht)                                                                                              \
+  ((sht == SHATYPE_SHA1) ? "SHA1"                                                                                      \
+                         : ((sht == SHATYPE_SHA256) ? "SHA256" : ((sht == SHATYPE_SHA384) ? "SHA384" : "SHA512")))
 
 /* <<== SHA */
 
 /* OAUTH TOKEN ENC ALG ==> */
 
 enum _ENC_ALG {
-	ENC_ALG_ERROR=-1,
+  ENC_ALG_ERROR = -1,
 #if !defined(TURN_NO_GCM)
-	ENC_ALG_DEFAULT=0,
-	A256GCM=ENC_ALG_DEFAULT,
-	A128GCM,
+  ENC_ALG_DEFAULT = 0,
+  A256GCM = ENC_ALG_DEFAULT,
+  A128GCM,
 #endif
-	ENC_ALG_NUM
+  ENC_ALG_NUM
 };
 
 typedef enum _ENC_ALG ENC_ALG;
@@ -210,44 +242,44 @@ typedef enum _ENC_ALG ENC_ALG;
 #define OAUTH_TIME_DELTA (5)
 
 struct _oauth_key_data {
-	char kid[OAUTH_KID_SIZE+1];
-	char ikm_key[OAUTH_KEY_SIZE+1];
-	size_t ikm_key_size;
-	turn_time_t timestamp;
-	turn_time_t lifetime;
-	char as_rs_alg[OAUTH_ALG_SIZE+1];
+  char kid[OAUTH_KID_SIZE + 1];
+  char ikm_key[OAUTH_KEY_SIZE + 1];
+  size_t ikm_key_size;
+  turn_time_t timestamp;
+  turn_time_t lifetime;
+  char as_rs_alg[OAUTH_ALG_SIZE + 1];
 };
 
 typedef struct _oauth_key_data oauth_key_data;
 
 struct _oauth_key {
-	char kid[OAUTH_KID_SIZE+1];
-	char ikm_key[OAUTH_KEY_SIZE+1];
-	size_t ikm_key_size;
-	turn_time_t timestamp;
-	turn_time_t lifetime;
-	ENC_ALG as_rs_alg;
-	char as_rs_key[OAUTH_KEY_SIZE+1];
-	size_t as_rs_key_size;
-	char auth_key[OAUTH_KEY_SIZE+1];
-	size_t auth_key_size;
+  char kid[OAUTH_KID_SIZE + 1];
+  char ikm_key[OAUTH_KEY_SIZE + 1];
+  size_t ikm_key_size;
+  turn_time_t timestamp;
+  turn_time_t lifetime;
+  ENC_ALG as_rs_alg;
+  char as_rs_key[OAUTH_KEY_SIZE + 1];
+  size_t as_rs_key_size;
+  char auth_key[OAUTH_KEY_SIZE + 1];
+  size_t auth_key_size;
 };
 
 typedef struct _oauth_key oauth_key;
 
 struct _oauth_encrypted_block {
-	uint16_t nonce_length;
-	uint8_t nonce[OAUTH_MAX_NONCE_SIZE];
-	uint16_t key_length;
-	uint8_t mac_key[MAXSHASIZE];
-	uint64_t timestamp;
-	uint32_t lifetime;
+  uint16_t nonce_length;
+  uint8_t nonce[OAUTH_MAX_NONCE_SIZE];
+  uint16_t key_length;
+  uint8_t mac_key[MAXSHASIZE];
+  uint64_t timestamp;
+  uint32_t lifetime;
 };
 
 typedef struct _oauth_encrypted_block oauth_encrypted_block;
 
 struct _oauth_token {
-	oauth_encrypted_block enc_block;
+  oauth_encrypted_block enc_block;
 };
 
 typedef struct _oauth_token oauth_token;
@@ -255,8 +287,8 @@ typedef struct _oauth_token oauth_token;
 #define MAX_ENCODED_OAUTH_TOKEN_SIZE (1024)
 
 struct _encoded_oauth_token {
-	char token[MAX_ENCODED_OAUTH_TOKEN_SIZE];
-	size_t size;
+  char token[MAX_ENCODED_OAUTH_TOKEN_SIZE];
+  size_t size;
 };
 
 typedef struct _encoded_oauth_token encoded_oauth_token;

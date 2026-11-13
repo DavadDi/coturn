@@ -1,4 +1,8 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * https://opensource.org/license/bsd-3-clause
+ *
  * Copyright (C) 2011, 2012, 2013 Citrix Systems
  * Copyright (C) 2014 Vivocha S.p.A.
  *
@@ -29,8 +33,8 @@
  * SUCH DAMAGE.
  */
 
-#include "../mainrelay.h"
 #include "dbd_pgsql.h"
+#include "../mainrelay.h"
 
 #if !defined(TURN_NO_PQ)
 #include <libpq-fe.h>
@@ -41,964 +45,967 @@ static int donot_print_connection_success = 0;
 
 static PGconn *get_pqdb_connection(void) {
 
-	persistent_users_db_t *pud = get_persistent_users_db();
+  persistent_users_db_t *pud = get_persistent_users_db();
 
-	PGconn *pqdbconnection = (PGconn*)pthread_getspecific(connection_key);
-	if(pqdbconnection) {
-		ConnStatusType status = PQstatus(pqdbconnection);
-		if(status != CONNECTION_OK) {
-			PQfinish(pqdbconnection);
-			pqdbconnection = NULL;
-			(void) pthread_setspecific(connection_key, pqdbconnection);
-		}
-	}
-	if(!pqdbconnection) {
-		char *errmsg=NULL;
-		PQconninfoOption *co = PQconninfoParse(pud->userdb, &errmsg);
-		if(!co) {
-			if(errmsg) {
-				TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Cannot open PostgreSQL DB connection <%s>, connection string format error: %s\n",pud->userdb,errmsg);
-				free(errmsg);
-			} else {
-				TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Cannot open PostgreSQL DB connection: <%s>, unknown connection string format error\n",pud->userdb);
-			}
-		} else {
-			PQconninfoFree(co);
-			if(errmsg)
-				free(errmsg);
-			pqdbconnection = PQconnectdb(pud->userdb);
-			if(!pqdbconnection) {
-				TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Cannot open PostgreSQL DB connection: <%s>, runtime error\n",pud->userdb);
-			} else {
-				ConnStatusType status = PQstatus(pqdbconnection);
-				if(status != CONNECTION_OK) {
-					PQfinish(pqdbconnection);
-					pqdbconnection = NULL;
-					TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Cannot open PostgreSQL DB connection: <%s>, runtime error\n",pud->userdb);
-				} else if(!donot_print_connection_success){
-					TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "PostgreSQL DB connection success: %s\n",pud->userdb);
-					donot_print_connection_success = 1;
-				}
-			}
-		}
+  PGconn *pqdbconnection = (PGconn *)pthread_getspecific(connection_key);
+  if (pqdbconnection) {
+    ConnStatusType status = PQstatus(pqdbconnection);
+    if (status != CONNECTION_OK) {
+      PQfinish(pqdbconnection);
+      pqdbconnection = NULL;
+      (void)pthread_setspecific(connection_key, pqdbconnection);
+    }
+  }
+  if (!pqdbconnection) {
+    char *errmsg = NULL;
+    PQconninfoOption *co = PQconninfoParse(pud->userdb, &errmsg);
+    if (!co) {
+      if (errmsg) {
+        TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR,
+                      "Cannot open PostgreSQL DB connection <%s>, connection string format error: %s\n",
+                      pud->userdb_sanitized, errmsg);
+        free(errmsg);
+      } else {
+        TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR,
+                      "Cannot open PostgreSQL DB connection: <%s>, unknown connection string format error\n",
+                      pud->userdb_sanitized);
+      }
+    } else {
+      PQconninfoFree(co);
+      if (errmsg) {
+        free(errmsg);
+      }
+      pqdbconnection = PQconnectdb(pud->userdb);
+      if (!pqdbconnection) {
+        TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Cannot open PostgreSQL DB connection: <%s>, runtime error\n",
+                      pud->userdb_sanitized);
+      } else {
+        ConnStatusType status = PQstatus(pqdbconnection);
+        if (status != CONNECTION_OK) {
+          PQfinish(pqdbconnection);
+          pqdbconnection = NULL;
+          TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Cannot open PostgreSQL DB connection: <%s>, runtime error\n",
+                        pud->userdb_sanitized);
+        } else if (!donot_print_connection_success) {
+          TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "PostgreSQL DB connection success: %s\n", pud->userdb_sanitized);
+          donot_print_connection_success = 1;
+        }
+      }
+    }
 
-		if(pqdbconnection) {
-			(void) pthread_setspecific(connection_key, pqdbconnection);
-		}
-	}
-	return pqdbconnection;
+    if (pqdbconnection) {
+      (void)pthread_setspecific(connection_key, pqdbconnection);
+    }
+  }
+  return pqdbconnection;
+}
+
+/* Execute `command` (which must use $1,$2,... placeholders) binding `nParams`
+ * values as text. This is the only path used for statements that carry
+ * caller-supplied values: the values travel out-of-band as parameters and never
+ * enter the SQL text, so there is no SQL injection surface. resultFormat 0 keeps
+ * results in text form, which is what the PQgetvalue() callers expect. */
+static PGresult *pq_exec_params(PGconn *pqc, const char *command, int nParams, const char *const paramValues[]) {
+  return PQexecParams(pqc, command, nParams, NULL, paramValues, NULL, NULL, 0);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 static int pgsql_get_auth_secrets(secrets_list_t *sl, uint8_t *realm) {
   int ret = -1;
-	PGconn * pqc = get_pqdb_connection();
-	if(pqc) {
-		char statement[TURN_LONG_STRING_SIZE];
-		snprintf(statement,sizeof(statement)-1,"select value from turn_secret where realm='%s'",realm);
-		PGresult *res = PQexec(pqc, statement);
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const params[] = {(const char *)realm};
+    PGresult *res = pq_exec_params(pqc, "select value from turn_secret where realm=$1", 1, params);
 
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		} else {
-			int i = 0;
-			for(i=0;i<PQntuples(res);i++) {
-				char *kval = PQgetvalue(res,i,0);
-				if(kval) {
-					add_to_secrets_list(sl,kval);
-				}
-			}
-			ret = 0;
-		}
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    } else {
+      int i = 0;
+      for (i = 0; i < PQntuples(res); i++) {
+        char *kval = PQgetvalue(res, i, 0);
+        if (kval) {
+          add_to_secrets_list(sl, kval);
+        }
+      }
+      ret = 0;
+    }
 
-		if(res) {
-			PQclear(res);
-		}
-	}
+    if (res) {
+      PQclear(res);
+    }
+  }
   return ret;
 }
-  
+
 static int pgsql_get_user_key(uint8_t *usname, uint8_t *realm, hmackey_t key) {
   int ret = -1;
-	PGconn * pqc = get_pqdb_connection();
-	if(pqc) {
-		char statement[TURN_LONG_STRING_SIZE];
-		/* direct user input eliminated - there is no SQL injection problem (since version 4.4.5.3) */
-		snprintf(statement,sizeof(statement),"select hmackey from turnusers_lt where name='%s' and realm='%s'",usname,realm);
-		PGresult *res = PQexec(pqc, statement);
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const params[] = {(const char *)usname, (const char *)realm};
+    PGresult *res = pq_exec_params(pqc, "select hmackey from turnusers_lt where name=$1 and realm=$2", 2, params);
 
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK) || (PQntuples(res)!=1)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		} else {
-			char *kval = PQgetvalue(res,0,0);
-			int len = PQgetlength(res,0,0);
-			if(kval) {
-				size_t sz = get_hmackey_size(SHATYPE_DEFAULT);
-				if(((size_t)len<sz*2)||(strlen(kval)<sz*2)) {
-					TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Wrong key format: %s, user %s\n",kval,usname);
-				} else if(convert_string_key_to_binary(kval, key, sz)<0) {
-					TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Wrong key: %s, user %s\n",kval,usname);
-				} else {
-					ret = 0;
-				}
-			} else {
-				TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Wrong hmackey data for user %s: NULL\n",usname);
-			}
-		}
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK) || (PQntuples(res) != 1)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    } else {
+      char *kval = PQgetvalue(res, 0, 0);
+      int len = PQgetlength(res, 0, 0);
+      if (kval) {
+        size_t sz = get_hmackey_size(SHATYPE_DEFAULT);
+        if (((size_t)len < sz * 2) || (strlen(kval) < sz * 2)) {
+          TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Wrong key format: %s, user %s\n", kval, usname);
+        } else {
+          convert_string_key_to_binary(kval, key, sz);
+          ret = 0;
+        }
+      } else {
+        TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Wrong hmackey data for user %s: NULL\n", usname);
+      }
+    }
 
-		if(res)
-			PQclear(res);
-
-	}
+    if (res) {
+      PQclear(res);
+    }
+  }
   return ret;
 }
 
 static int pgsql_get_oauth_key(const uint8_t *kid, oauth_key_data_raw *key) {
 
-	int ret = -1;
+  int ret = -1;
 
-	char statement[TURN_LONG_STRING_SIZE];
-	/* direct user input eliminated - there is no SQL injection problem (since version 4.4.5.3) */
-	snprintf(statement,sizeof(statement),"select ikm_key,timestamp,lifetime,as_rs_alg,realm from oauth_key where kid='%s'",(const char*)kid);
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const params[] = {(const char *)kid};
+    PGresult *res =
+        pq_exec_params(pqc, "select ikm_key,timestamp,lifetime,as_rs_alg,realm from oauth_key where kid=$1", 1, params);
 
-	PGconn * pqc = get_pqdb_connection();
-	if(pqc) {
-		PGresult *res = PQexec(pqc, statement);
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK) || (PQntuples(res) != 1)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    } else {
+      STRCPY(key->ikm_key, PQgetvalue(res, 0, 0));
+      key->timestamp = (uint64_t)strtoll(PQgetvalue(res, 0, 1), NULL, 10);
+      key->lifetime = (uint32_t)strtol(PQgetvalue(res, 0, 2), NULL, 10);
+      STRCPY(key->as_rs_alg, PQgetvalue(res, 0, 3));
+      STRCPY(key->realm, PQgetvalue(res, 0, 4));
+      STRCPY(key->kid, kid);
+      ret = 0;
+    }
 
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK) || (PQntuples(res)!=1)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		} else {
-			STRCPY(key->ikm_key,PQgetvalue(res,0,0));
-			key->timestamp = (uint64_t)strtoll(PQgetvalue(res,0,1),NULL,10);
-			key->lifetime = (uint32_t)strtol(PQgetvalue(res,0,2),NULL,10);
-			STRCPY(key->as_rs_alg,PQgetvalue(res,0,3));
-			STRCPY(key->realm,PQgetvalue(res,0,4));
-			STRCPY(key->kid,kid);
-			ret = 0;
-		}
+    if (res) {
+      PQclear(res);
+    }
+  }
 
-		if(res) {
-			PQclear(res);
-		}
-	}
-
-	return ret;
+  return ret;
 }
 
-static int pgsql_list_oauth_keys(secrets_list_t *kids,secrets_list_t *teas,secrets_list_t *tss,secrets_list_t *lts,secrets_list_t *realms) {
+static int pgsql_list_oauth_keys(secrets_list_t *kids, secrets_list_t *teas, secrets_list_t *tss, secrets_list_t *lts,
+                                 secrets_list_t *realms) {
 
-	oauth_key_data_raw key_;
-	oauth_key_data_raw *key=&key_;
+  oauth_key_data_raw key_;
+  oauth_key_data_raw *key = &key_;
 
-	int ret = -1;
+  int ret = -1;
 
-	char statement[TURN_LONG_STRING_SIZE];
-	snprintf(statement,sizeof(statement),"select ikm_key,timestamp,lifetime,as_rs_alg,realm,kid from oauth_key order by kid");
+  char statement[TURN_LONG_STRING_SIZE];
+  snprintf(statement, sizeof(statement),
+           "select ikm_key,timestamp,lifetime,as_rs_alg,realm,kid from oauth_key order by kid");
 
-	PGconn * pqc = get_pqdb_connection();
-	if(pqc) {
-		PGresult *res = PQexec(pqc, statement);
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    PGresult *res = PQexec(pqc, statement);
 
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		} else {
-			int i = 0;
-			for(i=0;i<PQntuples(res);i++) {
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    } else {
+      int i = 0;
+      for (i = 0; i < PQntuples(res); i++) {
 
-				STRCPY(key->ikm_key,PQgetvalue(res,i,0));
-				key->timestamp = (uint64_t)strtoll(PQgetvalue(res,i,1),NULL,10);
-				key->lifetime = (uint32_t)strtol(PQgetvalue(res,i,2),NULL,10);
-				STRCPY(key->as_rs_alg,PQgetvalue(res,i,3));
-				STRCPY(key->realm,PQgetvalue(res,i,4));
-				STRCPY(key->kid,PQgetvalue(res,i,5));
+        STRCPY(key->ikm_key, PQgetvalue(res, i, 0));
+        key->timestamp = (uint64_t)strtoll(PQgetvalue(res, i, 1), NULL, 10);
+        key->lifetime = (uint32_t)strtol(PQgetvalue(res, i, 2), NULL, 10);
+        STRCPY(key->as_rs_alg, PQgetvalue(res, i, 3));
+        STRCPY(key->realm, PQgetvalue(res, i, 4));
+        STRCPY(key->kid, PQgetvalue(res, i, 5));
 
-				if(kids) {
-					add_to_secrets_list(kids,key->kid);
-					add_to_secrets_list(teas,key->as_rs_alg);
-					add_to_secrets_list(realms,key->realm);
-					{
-						char ts[256];
-						snprintf(ts,sizeof(ts)-1,"%llu",(unsigned long long)key->timestamp);
-						add_to_secrets_list(tss,ts);
-					}
-					{
-						char lt[256];
-						snprintf(lt,sizeof(lt)-1,"%lu",(unsigned long)key->lifetime);
-						add_to_secrets_list(lts,lt);
-					}
-				} else {
-					printf("  kid=%s, ikm_key=%s, timestamp=%llu, lifetime=%lu, as_rs_alg=%s, realm=%s\n",
-						key->kid, key->ikm_key, (unsigned long long)key->timestamp, (unsigned long)key->lifetime,
-						key->as_rs_alg,key->realm);
-				}
+        if (kids) {
+          add_to_secrets_list(kids, key->kid);
+          add_to_secrets_list(teas, key->as_rs_alg);
+          add_to_secrets_list(realms, key->realm);
+          {
+            char ts[256];
+            snprintf(ts, sizeof(ts) - 1, "%llu", (unsigned long long)key->timestamp);
+            add_to_secrets_list(tss, ts);
+          }
+          {
+            char lt[256];
+            snprintf(lt, sizeof(lt) - 1, "%lu", (unsigned long)key->lifetime);
+            add_to_secrets_list(lts, lt);
+          }
+        } else {
+          printf("  kid=%s, ikm_key=%s, timestamp=%llu, lifetime=%lu, as_rs_alg=%s, realm=%s\n", key->kid, key->ikm_key,
+                 (unsigned long long)key->timestamp, (unsigned long)key->lifetime, key->as_rs_alg, key->realm);
+        }
 
-				ret = 0;
-			}
-		}
+        ret = 0;
+      }
+    }
 
-		if(res) {
-			PQclear(res);
-		}
-	}
+    if (res) {
+      PQclear(res);
+    }
+  }
 
-	return ret;
+  return ret;
 }
-  
+
 static int pgsql_set_user_key(uint8_t *usname, uint8_t *realm, const char *key) {
   int ret = -1;
-	char statement[TURN_LONG_STRING_SIZE];
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-	  snprintf(statement,sizeof(statement),"insert into turnusers_lt (realm,name,hmackey) values('%s','%s','%s')",realm,usname,key);
-
-		PGresult *res = PQexec(pqc, statement);
-		if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-			if(res) {
-				PQclear(res);
-			}
-			snprintf(statement,sizeof(statement),"update turnusers_lt set hmackey='%s' where name='%s' and realm='%s'",key,usname,realm);
-			res = PQexec(pqc, statement);
-			if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-				TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting/updating user information: %s\n",PQerrorMessage(pqc));
-			} else {
-			  ret = 0;
-			}
-		}
-		if(res) {
-			PQclear(res);
-		}
-	}
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const ins_params[] = {(const char *)realm, (const char *)usname, key};
+    PGresult *res =
+        pq_exec_params(pqc, "insert into turnusers_lt (realm,name,hmackey) values($1,$2,$3)", 3, ins_params);
+    if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+      if (res) {
+        PQclear(res);
+      }
+      const char *const upd_params[] = {key, (const char *)usname, (const char *)realm};
+      res = pq_exec_params(pqc, "update turnusers_lt set hmackey=$1 where name=$2 and realm=$3", 3, upd_params);
+      if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+        TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting/updating user information: %s\n", PQerrorMessage(pqc));
+      } else {
+        ret = 0;
+      }
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
   return ret;
 }
 
 static int pgsql_set_oauth_key(oauth_key_data_raw *key) {
 
   int ret = -1;
-  char statement[TURN_LONG_STRING_SIZE];
   PGconn *pqc = get_pqdb_connection();
-  if(pqc) {
-	  snprintf(statement,sizeof(statement),"insert into oauth_key (kid,ikm_key,timestamp,lifetime,as_rs_alg,realm) values('%s','%s',%llu,%lu,'%s','%s')",
-			  key->kid,key->ikm_key,(unsigned long long)key->timestamp,(unsigned long)key->lifetime,
-			  key->as_rs_alg,key->realm);
+  if (pqc) {
+    char ts[32];
+    char lt[32];
+    snprintf(ts, sizeof(ts), "%llu", (unsigned long long)key->timestamp);
+    snprintf(lt, sizeof(lt), "%lu", (unsigned long)key->lifetime);
 
-	  PGresult *res = PQexec(pqc, statement);
-	  if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-		  if(res) {
-			PQclear(res);
-		  }
-		  snprintf(statement,sizeof(statement),"update oauth_key set ikm_key='%s',timestamp=%lu,lifetime=%lu, as_rs_alg='%s', realm='%s' where kid='%s'",key->ikm_key,(unsigned long)key->timestamp,(unsigned long)key->lifetime,
-				  key->as_rs_alg,key->realm,key->kid);
-		  res = PQexec(pqc, statement);
-		  if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-			  TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting/updating oauth_key information: %s\n",PQerrorMessage(pqc));
-		  } else {
-			  ret = 0;
-		  }
-	  } else {
-		  ret = 0;
-	  }
+    const char *const ins_params[] = {key->kid, key->ikm_key, ts, lt, key->as_rs_alg, key->realm};
+    PGresult *res = pq_exec_params(
+        pqc, "insert into oauth_key (kid,ikm_key,timestamp,lifetime,as_rs_alg,realm) values($1,$2,$3,$4,$5,$6)", 6,
+        ins_params);
+    if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+      if (res) {
+        PQclear(res);
+      }
+      const char *const upd_params[] = {key->ikm_key, ts, lt, key->as_rs_alg, key->realm, key->kid};
+      res = pq_exec_params(
+          pqc, "update oauth_key set ikm_key=$1,timestamp=$2,lifetime=$3, as_rs_alg=$4, realm=$5 where kid=$6", 6,
+          upd_params);
+      if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+        TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting/updating oauth_key information: %s\n",
+                      PQerrorMessage(pqc));
+      } else {
+        ret = 0;
+      }
+    } else {
+      ret = 0;
+    }
 
-	  if(res) {
-		  PQclear(res);
-	  }
+    if (res) {
+      PQclear(res);
+    }
   }
   return ret;
 }
-  
+
 static int pgsql_del_user(uint8_t *usname, uint8_t *realm) {
   int ret = -1;
-	char statement[TURN_LONG_STRING_SIZE];
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-		snprintf(statement,sizeof(statement),"delete from turnusers_lt where name='%s' and realm='%s'",usname,realm);
-		PGresult *res = PQexec(pqc, statement);
-		if(res) {
-			PQclear(res);
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const params[] = {(const char *)usname, (const char *)realm};
+    PGresult *res = pq_exec_params(pqc, "delete from turnusers_lt where name=$1 and realm=$2", 2, params);
+    if (res) {
+      PQclear(res);
       ret = 0;
-		}
-	}
+    }
+  }
   return ret;
 }
 
 static int pgsql_del_oauth_key(const uint8_t *kid) {
 
   int ret = -1;
-  char statement[TURN_LONG_STRING_SIZE];
   PGconn *pqc = get_pqdb_connection();
-  if(pqc) {
-	  snprintf(statement,sizeof(statement),"delete from oauth_key where kid = '%s'",(const char*)kid);
-
-	  PGresult *res = PQexec(pqc, statement);
-	  if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-		  TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error deleting oauth_key information: %s\n",PQerrorMessage(pqc));
-	  } else {
-		  ret = 0;
-	  }
-	  if(res) {
-		  PQclear(res);
-	  }
+  if (pqc) {
+    const char *const params[] = {(const char *)kid};
+    PGresult *res = pq_exec_params(pqc, "delete from oauth_key where kid = $1", 1, params);
+    if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error deleting oauth_key information: %s\n", PQerrorMessage(pqc));
+    } else {
+      ret = 0;
+    }
+    if (res) {
+      PQclear(res);
+    }
   }
   return ret;
 }
-  
-static int pgsql_list_users(uint8_t *realm, secrets_list_t *users, secrets_list_t *realms)
-{
-	int ret = -1;
-	char statement[TURN_LONG_STRING_SIZE];
 
-	uint8_t realm0[STUN_MAX_REALM_SIZE+1] = "\0";
-	if(!realm) realm=realm0;
+static int pgsql_list_users(uint8_t *realm, secrets_list_t *users, secrets_list_t *realms) {
+  int ret = -1;
 
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-		if(realm[0]) {
-		  snprintf(statement,sizeof(statement),"select name,realm from turnusers_lt where realm='%s' order by name",realm);
-		} else {
-		  snprintf(statement,sizeof(statement),"select name,realm from turnusers_lt order by realm,name");
-		}
-		PGresult *res = PQexec(pqc, statement);
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		} else {
-			int i = 0;
-			for(i=0;i<PQntuples(res);i++) {
-				char *kval = PQgetvalue(res,i,0);
-				if(kval) {
-					char *rval = PQgetvalue(res,i,1);
-					if(rval) {
-						if(users) {
-							add_to_secrets_list(users,kval);
-							if(realms) {
-								if(rval && *rval) {
-									add_to_secrets_list(realms,rval);
-								} else {
-									add_to_secrets_list(realms,(char*)realm);
-								}
-							}
-						} else {
-							printf("%s[%s]\n", kval, rval);
-						}
-					}
-				}
-			}
-			ret = 0;
-		}
-		if(res) {
-			PQclear(res);
-		}
-	}
+  uint8_t realm0[STUN_MAX_REALM_SIZE + 1] = "\0";
+  if (!realm) {
+    realm = realm0;
+  }
+
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *statement;
+    const char *params[1];
+    int nparams = 0;
+    if (realm[0]) {
+      statement = "select name,realm from turnusers_lt where realm=$1 order by name";
+      params[nparams++] = (const char *)realm;
+    } else {
+      statement = "select name,realm from turnusers_lt order by realm,name";
+    }
+    PGresult *res = pq_exec_params(pqc, statement, nparams, params);
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    } else {
+      int i = 0;
+      for (i = 0; i < PQntuples(res); i++) {
+        char *kval = PQgetvalue(res, i, 0);
+        if (kval) {
+          char *rval = PQgetvalue(res, i, 1);
+          if (rval) {
+            if (users) {
+              add_to_secrets_list(users, kval);
+              if (realms) {
+                if (rval && *rval) {
+                  add_to_secrets_list(realms, rval);
+                } else {
+                  add_to_secrets_list(realms, (char *)realm);
+                }
+              }
+            } else {
+              printf("%s[%s]\n", kval, rval);
+            }
+          }
+        }
+      }
+      ret = 0;
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
   return ret;
 }
-  
-static int pgsql_list_secrets(uint8_t *realm, secrets_list_t *secrets, secrets_list_t *realms)
-{
-	int ret = -1;
 
-	uint8_t realm0[STUN_MAX_REALM_SIZE+1] = "\0";
-	if(!realm) realm=realm0;
+static int pgsql_list_secrets(uint8_t *realm, secrets_list_t *secrets, secrets_list_t *realms) {
+  int ret = -1;
 
-	char statement[TURN_LONG_STRING_SIZE];
-	if (realm[0]) {
-		snprintf(statement, sizeof(statement), "select value,realm from turn_secret where realm='%s' order by value", realm);
-	} else {
-		snprintf(statement, sizeof(statement), "select value,realm from turn_secret order by realm,value");
-	}
+  uint8_t realm0[STUN_MAX_REALM_SIZE + 1] = "\0";
+  if (!realm) {
+    realm = realm0;
+  }
 
-	donot_print_connection_success=1;
+  const char *statement;
+  const char *params[1];
+  int nparams = 0;
+  if (realm[0]) {
+    statement = "select value,realm from turn_secret where realm=$1 order by value";
+    params[nparams++] = (const char *)realm;
+  } else {
+    statement = "select value,realm from turn_secret order by realm,value";
+  }
 
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-		PGresult *res = PQexec(pqc, statement);
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		} else {
-			int i = 0;
-			for(i=0;i<PQntuples(res);i++) {
-				char *kval = PQgetvalue(res,i,0);
-				if(kval) {
-					char* rval = PQgetvalue(res,i,1);
-					if(secrets) {
-						add_to_secrets_list(secrets,kval);
-						if(realms) {
-							if(rval && *rval) {
-								add_to_secrets_list(realms,rval);
-							} else {
-								add_to_secrets_list(realms,(char*)realm);
-							}
-						}
-					} else {
-						printf("%s[%s]\n",kval,rval);
-					}
-				}
-			}
-			ret = 0;
-		}
-		if(res) {
-			PQclear(res);
-		}
-	}
-	return ret;
+  donot_print_connection_success = 1;
+
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    PGresult *res = pq_exec_params(pqc, statement, nparams, params);
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    } else {
+      int i = 0;
+      for (i = 0; i < PQntuples(res); i++) {
+        char *kval = PQgetvalue(res, i, 0);
+        if (kval) {
+          char *rval = PQgetvalue(res, i, 1);
+          if (secrets) {
+            add_to_secrets_list(secrets, kval);
+            if (realms) {
+              if (rval && *rval) {
+                add_to_secrets_list(realms, rval);
+              } else {
+                add_to_secrets_list(realms, (char *)realm);
+              }
+            }
+          } else {
+            printf("%s[%s]\n", kval, rval);
+          }
+        }
+      }
+      ret = 0;
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
+  return ret;
 }
-  
+
 static int pgsql_del_secret(uint8_t *secret, uint8_t *realm) {
   int ret = -1;
-	donot_print_connection_success=1;
-	char statement[TURN_LONG_STRING_SIZE];
-	PGconn *pqc = get_pqdb_connection();
-	if (pqc) {
-		if(!secret || (secret[0]==0))
-		  snprintf(statement,sizeof(statement),"delete from turn_secret where realm='%s'",realm);
-		else
-		  snprintf(statement,sizeof(statement),"delete from turn_secret where value='%s' and realm='%s'",secret,realm);
+  donot_print_connection_success = 1;
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *statement;
+    const char *params[2];
+    int nparams = 0;
+    if (!secret || (secret[0] == 0)) {
+      statement = "delete from turn_secret where realm=$1";
+      params[nparams++] = (const char *)realm;
+    } else {
+      statement = "delete from turn_secret where value=$1 and realm=$2";
+      params[nparams++] = (const char *)secret;
+      params[nparams++] = (const char *)realm;
+    }
 
-		PGresult *res = PQexec(pqc, statement);
-		if (res) {
-			PQclear(res);
+    PGresult *res = pq_exec_params(pqc, statement, nparams, params);
+    if (res) {
+      PQclear(res);
       ret = 0;
-		}
-	}
+    }
+  }
   return ret;
 }
-  
+
 static int pgsql_set_secret(uint8_t *secret, uint8_t *realm) {
   int ret = -1;
-	donot_print_connection_success = 1;
-	char statement[TURN_LONG_STRING_SIZE];
-	PGconn *pqc = get_pqdb_connection();
-	if (pqc) {
-	  snprintf(statement,sizeof(statement),"insert into turn_secret (realm,value) values('%s','%s')",realm,secret);
-	  PGresult *res = PQexec(pqc, statement);
-	  if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-		  TURN_LOG_FUNC(
-			  TURN_LOG_LEVEL_ERROR,
-			  "Error inserting/updating secret key information: %s\n",
-			  PQerrorMessage(pqc));
-	  } else {
-	    ret = 0;
-	  }
-	  if (res) {
-	    PQclear(res);
-	  }
-	}
+  donot_print_connection_success = 1;
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const params[] = {(const char *)realm, (const char *)secret};
+    PGresult *res = pq_exec_params(pqc, "insert into turn_secret (realm,value) values($1,$2)", 2, params);
+    if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting/updating secret key information: %s\n", PQerrorMessage(pqc));
+    } else {
+      ret = 0;
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
 
-	return ret;
+  return ret;
 }
 
-static int pgsql_set_permission_ip(const char *kind, uint8_t *realm, const char* ip, int del)
-{
-	int ret = -1;
+static int pgsql_set_permission_ip(const char *kind, uint8_t *realm, const char *ip, int del) {
+  int ret = -1;
 
-	uint8_t realm0[STUN_MAX_REALM_SIZE+1] = "\0";
-	if(!realm) realm=realm0;
+  uint8_t realm0[STUN_MAX_REALM_SIZE + 1] = "\0";
+  if (!realm) {
+    realm = realm0;
+  }
 
-	donot_print_connection_success = 1;
+  donot_print_connection_success = 1;
 
-	char statement[TURN_LONG_STRING_SIZE];
+  char statement[TURN_LONG_STRING_SIZE];
 
-	PGconn *pqc = get_pqdb_connection();
+  PGconn *pqc = get_pqdb_connection();
 
-	if (pqc) {
+  if (pqc) {
 
-		if(del) {
-			snprintf(statement, sizeof(statement), "delete from %s_peer_ip where realm = '%s'  and ip_range = '%s'", kind, (char*)realm, ip);
-		} else {
-			snprintf(statement, sizeof(statement), "insert into %s_peer_ip (realm,ip_range) values('%s','%s')", kind, (char*)realm, ip);
-		}
+    /* `kind` selects the table ("allowed"/"denied") and cannot be a bound
+     * parameter; the caller has already validated it against that whitelist.
+     * The realm and ip values are bound, never interpolated. */
+    if (del) {
+      snprintf(statement, sizeof(statement), "delete from %s_peer_ip where realm = $1  and ip_range = $2", kind);
+    } else {
+      snprintf(statement, sizeof(statement), "insert into %s_peer_ip (realm,ip_range) values($1,$2)", kind);
+    }
+    const char *const params[] = {(const char *)realm, ip};
 
-		PGresult *res = PQexec(pqc, statement);
-		if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-			TURN_LOG_FUNC(
-				TURN_LOG_LEVEL_ERROR,
-				"Error inserting ip permission information: %s\n",
-				PQerrorMessage(pqc));
-	  } else {
-	    ret = 0;
-	  }
-	  if (res) {
-	    PQclear(res);
-	  }
-	}
+    PGresult *res = pq_exec_params(pqc, statement, 2, params);
+    if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting ip permission information: %s\n", PQerrorMessage(pqc));
+    } else {
+      ret = 0;
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
 
-	return ret;
+  return ret;
 }
-  
+
 static int pgsql_add_origin(uint8_t *origin, uint8_t *realm) {
   int ret = -1;
-	char statement[TURN_LONG_STRING_SIZE];
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-		snprintf(statement,sizeof(statement),"insert into turn_origin_to_realm (origin,realm) values('%s','%s')",origin,realm);
-		PGresult *res = PQexec(pqc, statement);
-		if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting origin information: %s\n",PQerrorMessage(pqc));
-		} else {
-		  ret = 0;
-		}
-		if(res) {
-			PQclear(res);
-		}
-	}
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const params[] = {(const char *)origin, (const char *)realm};
+    PGresult *res = pq_exec_params(pqc, "insert into turn_origin_to_realm (origin,realm) values($1,$2)", 2, params);
+    if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting origin information: %s\n", PQerrorMessage(pqc));
+    } else {
+      ret = 0;
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
   return ret;
 }
-  
+
 static int pgsql_del_origin(uint8_t *origin) {
   int ret = -1;
-	char statement[TURN_LONG_STRING_SIZE];
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-		snprintf(statement,sizeof(statement),"delete from turn_origin_to_realm where origin='%s'",origin);
-		PGresult *res = PQexec(pqc, statement);
-		if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error deleting origin information: %s\n",PQerrorMessage(pqc));
-		} else {
-		  ret = 0;
-		}
-		if(res) {
-			PQclear(res);
-		}
-	}
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const params[] = {(const char *)origin};
+    PGresult *res = pq_exec_params(pqc, "delete from turn_origin_to_realm where origin=$1", 1, params);
+    if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error deleting origin information: %s\n", PQerrorMessage(pqc));
+    } else {
+      ret = 0;
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
   return ret;
 }
-  
-static int pgsql_list_origins(uint8_t *realm, secrets_list_t *origins, secrets_list_t *realms)
-{
-	int ret = -1;
 
-	uint8_t realm0[STUN_MAX_REALM_SIZE+1] = "\0";
-	if(!realm) realm=realm0;
-
-	donot_print_connection_success = 1;
-
-	PGconn *pqc = get_pqdb_connection();
-
-	if(pqc) {
-
-		char statement[TURN_LONG_STRING_SIZE];
-
-		if(realm && realm[0]) {
-		  snprintf(statement,sizeof(statement),"select origin,realm from turn_origin_to_realm where realm='%s' order by origin",realm);
-		} else {
-		  snprintf(statement,sizeof(statement),"select origin,realm from turn_origin_to_realm order by realm,origin");
-		}
-		PGresult *res = PQexec(pqc, statement);
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		} else {
-			int i = 0;
-			for(i=0;i<PQntuples(res);i++) {
-				char *kval = PQgetvalue(res,i,0);
-				if(kval) {
-					char *rval = PQgetvalue(res,i,1);
-					if(rval) {
-						if(origins) {
-							add_to_secrets_list(origins,kval);
-							if(realms) {
-								if(rval && *rval) {
-									add_to_secrets_list(realms,rval);
-								} else {
-									add_to_secrets_list(realms,(char*)realm);
-								}
-							}
-						} else {
-							printf("%s ==>> %s\n",kval,rval);
-						}
-					}
-				}
-			}
-			ret = 0;
-		}
-		if(res) {
-			PQclear(res);
-		}
-	}
-	return ret;
-}
-  
-static int pgsql_set_realm_option_one(uint8_t *realm, unsigned long value, const char* opt) {
+static int pgsql_list_origins(uint8_t *realm, secrets_list_t *origins, secrets_list_t *realms) {
   int ret = -1;
-	char statement[TURN_LONG_STRING_SIZE];
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-		{
-			snprintf(statement,sizeof(statement),"delete from turn_realm_option where realm='%s' and opt='%s'",realm,opt);
-			PGresult *res = PQexec(pqc, statement);
-			if(res) {
-				PQclear(res);
-			}
-		}
-		if(value>0) {
-			snprintf(statement,sizeof(statement),"insert into turn_realm_option (realm,opt,value) values('%s','%s','%lu')",realm,opt,(unsigned long)value);
-			PGresult *res = PQexec(pqc, statement);
-			if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-				TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting realm option information: %s\n",PQerrorMessage(pqc));
-			} else {
-			  ret = 0;
-			}
-			if(res) {
-				PQclear(res);
-			}
-		}
-	}
+
+  uint8_t realm0[STUN_MAX_REALM_SIZE + 1] = "\0";
+  if (!realm) {
+    realm = realm0;
+  }
+
+  donot_print_connection_success = 1;
+
+  PGconn *pqc = get_pqdb_connection();
+
+  if (pqc) {
+
+    const char *statement;
+    const char *params[1];
+    int nparams = 0;
+    if (realm && realm[0]) {
+      statement = "select origin,realm from turn_origin_to_realm where realm=$1 order by origin";
+      params[nparams++] = (const char *)realm;
+    } else {
+      statement = "select origin,realm from turn_origin_to_realm order by realm,origin";
+    }
+    PGresult *res = pq_exec_params(pqc, statement, nparams, params);
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    } else {
+      int i = 0;
+      for (i = 0; i < PQntuples(res); i++) {
+        char *kval = PQgetvalue(res, i, 0);
+        if (kval) {
+          char *rval = PQgetvalue(res, i, 1);
+          if (rval) {
+            if (origins) {
+              add_to_secrets_list(origins, kval);
+              if (realms) {
+                if (rval && *rval) {
+                  add_to_secrets_list(realms, rval);
+                } else {
+                  add_to_secrets_list(realms, (char *)realm);
+                }
+              }
+            } else {
+              printf("%s ==>> %s\n", kval, rval);
+            }
+          }
+        }
+      }
+      ret = 0;
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
   return ret;
 }
-  
+
+static int pgsql_set_realm_option_one(uint8_t *realm, unsigned long value, const char *opt) {
+  int ret = -1;
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    {
+      const char *const params[] = {(const char *)realm, opt};
+      PGresult *res = pq_exec_params(pqc, "delete from turn_realm_option where realm=$1 and opt=$2", 2, params);
+      if (res) {
+        PQclear(res);
+      }
+    }
+    if (value > 0) {
+      char val[32];
+      snprintf(val, sizeof(val), "%lu", (unsigned long)value);
+      const char *const params[] = {(const char *)realm, opt, val};
+      PGresult *res =
+          pq_exec_params(pqc, "insert into turn_realm_option (realm,opt,value) values($1,$2,$3)", 3, params);
+      if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+        TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting realm option information: %s\n", PQerrorMessage(pqc));
+      } else {
+        ret = 0;
+      }
+      if (res) {
+        PQclear(res);
+      }
+    }
+  }
+  return ret;
+}
+
 static int pgsql_list_realm_options(uint8_t *realm) {
   int ret = -1;
-	donot_print_connection_success = 1;
-	char statement[TURN_LONG_STRING_SIZE];
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-		if(realm && realm[0]) {
-			snprintf(statement,sizeof(statement),"select realm,opt,value from turn_realm_option where realm='%s' order by realm,opt",realm);
-		} else {
-			snprintf(statement,sizeof(statement),"select realm,opt,value from turn_realm_option order by realm,opt");
-		}
-		PGresult *res = PQexec(pqc, statement);
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		} else {
-			int i = 0;
-			for(i=0;i<PQntuples(res);i++) {
-				char *rval = PQgetvalue(res,i,0);
-				if(rval) {
-					char *oval = PQgetvalue(res,i,1);
-					if(oval) {
-						char *vval = PQgetvalue(res,i,2);
-						if(vval) {
-							printf("%s[%s]=%s\n",oval,rval,vval);
-						}
-					}
-				}
-			}
+  donot_print_connection_success = 1;
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *statement;
+    const char *params[1];
+    int nparams = 0;
+    if (realm && realm[0]) {
+      statement = "select realm,opt,value from turn_realm_option where realm=$1 order by realm,opt";
+      params[nparams++] = (const char *)realm;
+    } else {
+      statement = "select realm,opt,value from turn_realm_option order by realm,opt";
+    }
+    PGresult *res = pq_exec_params(pqc, statement, nparams, params);
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    } else {
+      int i = 0;
+      for (i = 0; i < PQntuples(res); i++) {
+        char *rval = PQgetvalue(res, i, 0);
+        if (rval) {
+          char *oval = PQgetvalue(res, i, 1);
+          if (oval) {
+            char *vval = PQgetvalue(res, i, 2);
+            if (vval) {
+              printf("%s[%s]=%s\n", oval, rval, vval);
+            }
+          }
+        }
+      }
       ret = 0;
-		}
-		if(res) {
-			PQclear(res);
-		}
-	}
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
   return ret;
 }
-  
-static void pgsql_auth_ping(void * rch) {
-	UNUSED_ARG(rch);
-	PGconn * pqc = get_pqdb_connection();
-	if(pqc) {
-		char statement[TURN_LONG_STRING_SIZE];
-		STRCPY(statement,"select value from turn_secret");
-		PGresult *res = PQexec(pqc, statement);
 
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		}
+static void pgsql_auth_ping(void *rch) {
+  UNUSED_ARG(rch);
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    char statement[TURN_LONG_STRING_SIZE];
+    STRCPY(statement, "select value from turn_secret");
+    PGresult *res = PQexec(pqc, statement);
 
-		if(res) {
-			PQclear(res);
-		}
-	}
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    }
+
+    if (res) {
+      PQclear(res);
+    }
+  }
 }
-  
 
-static int pgsql_get_ip_list(const char *kind, ip_range_list_t * list)
-{
-	int ret = -1;
-	PGconn * pqc = get_pqdb_connection();
-	if (pqc) {
-		char statement[TURN_LONG_STRING_SIZE];
-		snprintf(statement, sizeof(statement), "select ip_range,realm from %s_peer_ip", kind);
-		PGresult *res = PQexec(pqc, statement);
+static int pgsql_get_ip_list(const char *kind, ip_range_list_t *list) {
+  int ret = -1;
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    char statement[TURN_LONG_STRING_SIZE];
+    snprintf(statement, sizeof(statement), "select ip_range,realm from %s_peer_ip", kind);
+    PGresult *res = PQexec(pqc, statement);
 
-		if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
-			static int wrong_table_reported = 0;
-			if(!wrong_table_reported) {
-				wrong_table_reported = 1;
-				TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s; probably, the tables 'allowed_peer_ip' and/or 'denied_peer_ip' have to be upgraded to include the realm column.\n",PQerrorMessage(pqc));
-			}
-			snprintf(statement, sizeof(statement), "select ip_range,'' from %s_peer_ip", kind);
-			res = PQexec(pqc, statement);
-		}
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
+      static int wrong_table_reported = 0;
+      if (!wrong_table_reported) {
+        wrong_table_reported = 1;
+        TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR,
+                      "Error retrieving PostgreSQL DB information: %s; probably, the tables 'allowed_peer_ip' and/or "
+                      "'denied_peer_ip' have to be upgraded to include the realm column.\n",
+                      PQerrorMessage(pqc));
+      }
+      snprintf(statement, sizeof(statement), "select ip_range,'' from %s_peer_ip", kind);
+      res = PQexec(pqc, statement);
+    }
 
-		if (res && (PQresultStatus(res) == PGRES_TUPLES_OK)) {
-			int i = 0;
-			for (i = 0; i < PQntuples(res); i++) {
-				char *kval = PQgetvalue(res, i, 0);
-				char *rval = PQgetvalue(res, i, 1);
-				if (kval) {
-					add_ip_list_range(kval, rval, list);
-				}
-			}
-			ret = 0;
-		}
+    if (res && (PQresultStatus(res) == PGRES_TUPLES_OK)) {
+      int i = 0;
+      for (i = 0; i < PQntuples(res); i++) {
+        char *kval = PQgetvalue(res, i, 0);
+        char *rval = PQgetvalue(res, i, 1);
+        if (kval) {
+          add_ip_list_range(kval, rval, list);
+        }
+      }
+      ret = 0;
+    }
 
-		if (res) {
-			PQclear(res);
-		}
-	}
-	return ret;
+    if (res) {
+      PQclear(res);
+    }
+  }
+  return ret;
 }
-  
-static void pgsql_reread_realms(secrets_list_t * realms_list) {
-	PGconn * pqc = get_pqdb_connection();
-	if(pqc) {
-		char statement[TURN_LONG_STRING_SIZE];
 
-		{
-			snprintf(statement,sizeof(statement),"select origin,realm from turn_origin_to_realm");
-			PGresult *res = PQexec(pqc, statement);
+static void pgsql_reread_realms(secrets_list_t *realms_list) {
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    char statement[TURN_LONG_STRING_SIZE];
 
-			if(res && (PQresultStatus(res) == PGRES_TUPLES_OK)) {
+    {
+      snprintf(statement, sizeof(statement), "select origin,realm from turn_origin_to_realm");
+      PGresult *res = PQexec(pqc, statement);
 
-				ur_string_map *o_to_realm_new = ur_string_map_create(free);
+      if (res && (PQresultStatus(res) == PGRES_TUPLES_OK)) {
 
-				int i = 0;
-				for(i=0;i<PQntuples(res);i++) {
-					char *oval = PQgetvalue(res,i,0);
-					if(oval) {
-						char *rval = PQgetvalue(res,i,1);
-						if(rval) {
-							get_realm(rval);
-							ur_string_map_value_type value = strdup(rval);
-							ur_string_map_put(o_to_realm_new, (ur_string_map_key_type) oval, value);
-						}
-					}
-				}
+        ur_string_map *o_to_realm_new = ur_string_map_create(free);
+
+        int i = 0;
+        for (i = 0; i < PQntuples(res); i++) {
+          char *oval = PQgetvalue(res, i, 0);
+          if (oval) {
+            char *rval = PQgetvalue(res, i, 1);
+            if (rval) {
+              get_realm(rval);
+              ur_string_map_value_type value = turn_strdup(rval);
+              if (!ur_string_map_put(o_to_realm_new, (ur_string_map_key_type)oval, value)) {
+                free(value);
+              }
+            }
+          }
+        }
 
         update_o_to_realm(o_to_realm_new);
-			}
+      }
 
-			if(res) {
-				PQclear(res);
-			}
-		}
+      if (res) {
+        PQclear(res);
+      }
+    }
 
-		{
-			{
-				size_t i = 0;
-				size_t rlsz = 0;
+    {
+      {
+        size_t i = 0;
+        size_t rlsz = 0;
 
-				lock_realms();
-				rlsz = realms_list->sz;
-				unlock_realms();
+        lock_realms();
+        rlsz = realms_list->sz;
+        unlock_realms();
 
-				for (i = 0; i<rlsz; ++i) {
+        for (i = 0; i < rlsz; ++i) {
 
-					char *realm = realms_list->secrets[i];
+          char *realm = realms_list->secrets[i];
 
-					realm_params_t* rp = get_realm(realm);
+          realm_params_t *rp = get_realm(realm);
 
-					lock_realms();
-					rp->options.perf_options.max_bps = turn_params.max_bps;
-					unlock_realms();
+          lock_realms();
+          rp->options.perf_options.max_bps = turn_params.max_bps;
+          unlock_realms();
 
-					lock_realms();
-					rp->options.perf_options.total_quota = turn_params.total_quota;
-					unlock_realms();
+          lock_realms();
+          rp->options.perf_options.total_quota = turn_params.total_quota;
+          unlock_realms();
 
-					lock_realms();
-					rp->options.perf_options.user_quota = turn_params.user_quota;
-					unlock_realms();
+          lock_realms();
+          rp->options.perf_options.user_quota = turn_params.user_quota;
+          unlock_realms();
+        }
+      }
 
-				}
-			}
+      snprintf(statement, sizeof(statement), "select realm,opt,value from turn_realm_option");
+      PGresult *res = PQexec(pqc, statement);
 
-			snprintf(statement,sizeof(statement),"select realm,opt,value from turn_realm_option");
-			PGresult *res = PQexec(pqc, statement);
+      if (res && (PQresultStatus(res) == PGRES_TUPLES_OK)) {
 
-			if(res && (PQresultStatus(res) == PGRES_TUPLES_OK)) {
+        int i = 0;
+        for (i = 0; i < PQntuples(res); i++) {
+          char *rval = PQgetvalue(res, i, 0);
+          char *oval = PQgetvalue(res, i, 1);
+          char *vval = PQgetvalue(res, i, 2);
+          if (rval && oval && vval) {
+            realm_params_t *rp = get_realm(rval);
+            if (!strcmp(oval, "max-bps")) {
+              rp->options.perf_options.max_bps = (band_limit_t)strtoul(vval, NULL, 10);
+            } else if (!strcmp(oval, "total-quota")) {
+              rp->options.perf_options.total_quota = (vint)atoi(vval);
+            } else if (!strcmp(oval, "user-quota")) {
+              rp->options.perf_options.user_quota = (vint)atoi(vval);
+            } else {
+              TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Unknown realm option: %s\n", oval);
+            }
+          }
+        }
+      }
 
-				int i = 0;
-				for(i=0;i<PQntuples(res);i++) {
-					char *rval = PQgetvalue(res,i,0);
-					char *oval = PQgetvalue(res,i,1);
-					char *vval = PQgetvalue(res,i,2);
-					if(rval && oval && vval) {
-						realm_params_t* rp = get_realm(rval);
-						if(!strcmp(oval,"max-bps"))
-							rp->options.perf_options.max_bps = (band_limit_t)strtoul(vval,NULL,10);
-						else if(!strcmp(oval,"total-quota"))
-							rp->options.perf_options.total_quota = (vint)atoi(vval);
-						else if(!strcmp(oval,"user-quota"))
-							rp->options.perf_options.user_quota = (vint)atoi(vval);
-						else {
-							TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Unknown realm option: %s\n", oval);
-						}
-					}
-				}
-			}
-
-			if(res) {
-				PQclear(res);
-			}
-		}
-	}
+      if (res) {
+        PQclear(res);
+      }
+    }
+  }
 }
 
 //////////////////////////////////////////////
 
-static int pgsql_get_admin_user(const uint8_t *usname, uint8_t *realm, password_t pwd)
-{
-	int ret = -1;
+static int pgsql_get_admin_user(const uint8_t *usname, uint8_t *realm, password_t pwd) {
+  int ret = -1;
 
-	realm[0]=0;
-	pwd[0]=0;
+  realm[0] = 0;
+  pwd[0] = 0;
 
-	PGconn * pqc = get_pqdb_connection();
-	if(pqc) {
-		char statement[TURN_LONG_STRING_SIZE];
-		snprintf(statement,sizeof(statement),"select realm,password from admin_user where name='%s'",usname);
-		PGresult *res = PQexec(pqc, statement);
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const params[] = {(const char *)usname};
+    PGresult *res = pq_exec_params(pqc, "select realm,password from admin_user where name=$1", 1, params);
 
-		if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK) || (PQntuples(res)!=1)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-		} else {
-			const char *kval = PQgetvalue(res,0,0);
-			if(kval) {
-				strncpy((char*)realm,kval,STUN_MAX_REALM_SIZE);
-			}
-			kval = (const char*) PQgetvalue(res,0,1);
-			if(kval) {
-				strncpy((char*)pwd,kval,STUN_MAX_PWD_SIZE);
-			}
-			ret = 0;
-		}
+    if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK) || (PQntuples(res) != 1)) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+    } else {
+      const char *kval = PQgetvalue(res, 0, 0);
+      if (kval) {
+        strncpy((char *)realm, kval, STUN_MAX_REALM_SIZE);
+        realm[STUN_MAX_REALM_SIZE] = '\0';
+      }
+      kval = (const char *)PQgetvalue(res, 0, 1);
+      if (kval) {
+        strncpy((char *)pwd, kval, STUN_MAX_PWD_SIZE);
+        pwd[STUN_MAX_PWD_SIZE] = '\0';
+      }
+      ret = 0;
+    }
 
-		if(res)
-			PQclear(res);
-
-	}
-	return ret;
+    if (res) {
+      PQclear(res);
+    }
+  }
+  return ret;
 }
 
-static int pgsql_set_admin_user(const uint8_t *usname, const uint8_t *realm, const password_t pwd)
-{
-	int ret = -1;
-	char statement[TURN_LONG_STRING_SIZE];
-	donot_print_connection_success=1;
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-	  snprintf(statement,sizeof(statement),"insert into admin_user (realm,name,password) values('%s','%s','%s')",realm,usname,pwd);
-
-	  PGresult *res = PQexec(pqc, statement);
-	  if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-		if(res) {
-			PQclear(res);
-		}
-		snprintf(statement,sizeof(statement),"update admin_user set password='%s',realm='%s' where name='%s'",pwd,realm,usname);
-		res = PQexec(pqc, statement);
-		if(!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting/updating user information: %s\n",PQerrorMessage(pqc));
-		} else {
-		  ret = 0;
-		}
-	  }
-	  if(res) {
-		PQclear(res);
-	  }
-	}
-	return ret;
+static int pgsql_set_admin_user(const uint8_t *usname, const uint8_t *realm, const password_t pwd) {
+  int ret = -1;
+  donot_print_connection_success = 1;
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const ins_params[] = {(const char *)realm, (const char *)usname, (const char *)pwd};
+    PGresult *res = pq_exec_params(pqc, "insert into admin_user (realm,name,password) values($1,$2,$3)", 3, ins_params);
+    if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+      if (res) {
+        PQclear(res);
+      }
+      const char *const upd_params[] = {(const char *)pwd, (const char *)realm, (const char *)usname};
+      res = pq_exec_params(pqc, "update admin_user set password=$1,realm=$2 where name=$3", 3, upd_params);
+      if (!res || (PQresultStatus(res) != PGRES_COMMAND_OK)) {
+        TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error inserting/updating user information: %s\n", PQerrorMessage(pqc));
+      } else {
+        ret = 0;
+      }
+    }
+    if (res) {
+      PQclear(res);
+    }
+  }
+  return ret;
 }
 
-static int pgsql_del_admin_user(const uint8_t *usname)
-{
-	int ret = -1;
-	char statement[TURN_LONG_STRING_SIZE];
-	donot_print_connection_success=1;
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-		snprintf(statement,sizeof(statement),"delete from admin_user where name='%s'",usname);
-		PGresult *res = PQexec(pqc, statement);
-		if(res) {
-			PQclear(res);
-			ret = 0;
-		}
-	}
-	return ret;
+static int pgsql_del_admin_user(const uint8_t *usname) {
+  int ret = -1;
+  donot_print_connection_success = 1;
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    const char *const params[] = {(const char *)usname};
+    PGresult *res = pq_exec_params(pqc, "delete from admin_user where name=$1", 1, params);
+    if (res) {
+      PQclear(res);
+      ret = 0;
+    }
+  }
+  return ret;
 }
 
-static int pgsql_list_admin_users(int no_print)
-{
-	int ret = -1;
-	char statement[TURN_LONG_STRING_SIZE];
-	donot_print_connection_success=1;
-	PGconn *pqc = get_pqdb_connection();
-	if(pqc) {
-		snprintf(statement,sizeof(statement),"select name,realm,password from admin_user order by realm,name");
-	}
-	PGresult *res = PQexec(pqc, statement);
-	if(!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
-		TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n",PQerrorMessage(pqc));
-	} else {
-		int i = 0;
-		ret = 0;
-		for(i=0;i<PQntuples(res);i++) {
-			char *kval = PQgetvalue(res,i,0);
-			++ret;
-			if(kval && !no_print) {
-				char *rval = PQgetvalue(res,i,1);
-				if(rval && *rval) {
-					printf("%s[%s]\n",kval,rval);
-				} else {
-					printf("%s\n",kval);
-				}
-			}
-		}
-	}
-	if(res) {
-		PQclear(res);
-	}
-	return ret;
+static int pgsql_list_admin_users(int no_print) {
+  int ret = -1;
+  char statement[TURN_LONG_STRING_SIZE];
+  donot_print_connection_success = 1;
+  PGconn *pqc = get_pqdb_connection();
+  if (pqc) {
+    snprintf(statement, sizeof(statement), "select name,realm,password from admin_user order by realm,name");
+  }
+  PGresult *res = PQexec(pqc, statement);
+  if (!res || (PQresultStatus(res) != PGRES_TUPLES_OK)) {
+    TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "Error retrieving PostgreSQL DB information: %s\n", PQerrorMessage(pqc));
+  } else {
+    int i = 0;
+    ret = 0;
+    for (i = 0; i < PQntuples(res); i++) {
+      char *kval = PQgetvalue(res, i, 0);
+      ++ret;
+      if (kval && !no_print) {
+        char *rval = PQgetvalue(res, i, 1);
+        if (rval && *rval) {
+          printf("%s[%s]\n", kval, rval);
+        } else {
+          printf("%s\n", kval);
+        }
+      }
+    }
+  }
+  if (res) {
+    PQclear(res);
+  }
+  return ret;
 }
 
 static void pgsql_disconnect(void) {
-	PGconn *pqdbconnection = (PGconn*)pthread_getspecific(connection_key);
-	if (pqdbconnection) {
-		PQfinish(pqdbconnection);
-		pqdbconnection=NULL;
-	}
-	TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "PostgreSQL connection was closed.\n");
+  PGconn *pqdbconnection = (PGconn *)pthread_getspecific(connection_key);
+  if (pqdbconnection) {
+    PQfinish(pqdbconnection);
+    pqdbconnection = NULL;
+  }
+  TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "PostgreSQL connection was closed.\n");
 }
 
 /////////////////////////////////////////////////////////////
 
-static const turn_dbdriver_t driver = {
-  &pgsql_get_auth_secrets,
-  &pgsql_get_user_key,
-  &pgsql_set_user_key,
-  &pgsql_del_user,
-  &pgsql_list_users,
-  &pgsql_list_secrets,
-  &pgsql_del_secret,
-  &pgsql_set_secret,
-  &pgsql_add_origin,
-  &pgsql_del_origin,
-  &pgsql_list_origins,
-  &pgsql_set_realm_option_one,
-  &pgsql_list_realm_options,
-  &pgsql_auth_ping,
-  &pgsql_get_ip_list,
-  &pgsql_set_permission_ip,
-  &pgsql_reread_realms,
-  &pgsql_set_oauth_key,
-  &pgsql_get_oauth_key,
-  &pgsql_del_oauth_key,
-  &pgsql_list_oauth_keys,
-  &pgsql_get_admin_user,
-  &pgsql_set_admin_user,
-  &pgsql_del_admin_user,
-  &pgsql_list_admin_users,
-  &pgsql_disconnect
-};
+static const turn_dbdriver_t driver = {&pgsql_get_auth_secrets,   &pgsql_get_user_key,   &pgsql_set_user_key,
+                                       &pgsql_del_user,           &pgsql_list_users,     &pgsql_list_secrets,
+                                       &pgsql_del_secret,         &pgsql_set_secret,     &pgsql_add_origin,
+                                       &pgsql_del_origin,         &pgsql_list_origins,   &pgsql_set_realm_option_one,
+                                       &pgsql_list_realm_options, &pgsql_auth_ping,      &pgsql_get_ip_list,
+                                       &pgsql_set_permission_ip,  &pgsql_reread_realms,  &pgsql_set_oauth_key,
+                                       &pgsql_get_oauth_key,      &pgsql_del_oauth_key,  &pgsql_list_oauth_keys,
+                                       &pgsql_get_admin_user,     &pgsql_set_admin_user, &pgsql_del_admin_user,
+                                       &pgsql_list_admin_users,   &pgsql_disconnect,     NULL};
 
-const turn_dbdriver_t * get_pgsql_dbdriver(void) {
-  return &driver;
-}
+const turn_dbdriver_t *get_pgsql_dbdriver(void) { return &driver; }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #else
 
-const turn_dbdriver_t * get_pgsql_dbdriver(void) {
-  return NULL;
-}
+const turn_dbdriver_t *get_pgsql_dbdriver(void) { return NULL; }
 
 #endif

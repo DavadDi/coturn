@@ -1,4 +1,8 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * https://opensource.org/license/bsd-3-clause
+ *
  * Copyright (C) 2011, 2012, 2013 Citrix Systems
  *
  * All rights reserved.
@@ -35,25 +39,27 @@
 #ifndef __IOA_LIBIMPL__
 #define __IOA_LIBIMPL__
 
-#include <event2/event.h>
-#include <event2/bufferevent.h>
-#include <event2/buffer.h>
-
-#include <event2/thread.h>
+#include "ns_turn_ioalib.h" // IWYU pragma: export
 
 #include "ns_turn_openssl.h"
 
-#include "ns_turn_ioalib.h"
-#include "turn_ports.h"
-#include "ns_turn_maps_rtcp.h"
+#include "mp_peer_table.h"
 #include "ns_turn_maps.h"
+#include "ns_turn_maps_rtcp.h"
 #include "ns_turn_server.h"
+#include "turn_ports.h"
 
 #include "apputils.h"
 #include "stun_buffer.h"
 #include "userdb.h"
 
 #include "ns_sm.h"
+
+#include <event2/buffer.h>
+#include <event2/bufferevent.h>
+#include <event2/event.h>
+
+#include <event2/thread.h>
 
 #include <pthread.h>
 
@@ -65,19 +71,25 @@ extern "C" {
 
 #define MAX_BUFFER_QUEUE_SIZE_PER_ENGINE (64)
 #define MAX_SOCKET_BUFFER_BACKLOG (16)
+#define IOA_UDP_RECVMMSG_MAX_BATCH (16)
+#define IOA_UDP_SENDMMSG_MAX_BATCH (32)
 
-#define BUFFEREVENT_HIGH_WATERMARK (128<<10)
-#define BUFFEREVENT_MAX_UDP_TO_TCP_WRITE (64<<9)
-#define BUFFEREVENT_MAX_TCP_TO_TCP_WRITE (192<<10)
+#define BUFFEREVENT_HIGH_WATERMARK (128 << 10)
+#define BUFFEREVENT_MAX_UDP_TO_TCP_WRITE (64 << 9)
+#define BUFFEREVENT_MAX_TCP_TO_TCP_WRITE (192 << 10)
+
+typedef unsigned char recv_ttl_t;
+typedef unsigned char recv_tos_t;
 
 typedef struct _stun_buffer_list_elem {
-	struct _stun_buffer_list_elem *next;
-	stun_buffer buf;
+  struct _stun_buffer_list_elem *next;
+  stun_buffer buf;
 } stun_buffer_list_elem;
 
 typedef struct _stun_buffer_list {
-	stun_buffer_list_elem *head;
-	size_t tsz;
+  stun_buffer_list_elem *head;
+  stun_buffer_list_elem *tail;
+  size_t tsz;
 } stun_buffer_list;
 
 /*
@@ -85,40 +97,40 @@ typedef struct _stun_buffer_list {
  */
 
 struct cb_socket_message {
-	turnserver_id id;
-	tcp_connection_id connection_id;
-	stun_tid tid;
-	ioa_socket_handle s;
-	int message_integrity;
-	ioa_net_data nd;
-	int can_resume;
+  turnserver_id id;
+  tcp_connection_id connection_id;
+  stun_tid tid;
+  ioa_socket_handle s;
+  int message_integrity;
+  ioa_net_data nd;
+  int can_resume;
 };
 
 struct cancelled_session_message {
-	turnsession_id id;
+  turnsession_id id;
 };
 
 struct relay_server {
-	turnserver_id id;
-	super_memory_t* sm;
-	struct event_base* event_base;
-	struct bufferevent *in_buf;
-	struct bufferevent *out_buf;
-	struct bufferevent *auth_in_buf;
-	struct bufferevent *auth_out_buf;
-	ioa_engine_handle ioa_eng;
-	turn_turnserver server;
-	pthread_t thr;
+  turnserver_id id;
+  super_memory_t *sm;
+  struct event_base *event_base;
+  struct bufferevent *in_buf;
+  struct bufferevent *out_buf;
+  struct bufferevent *auth_in_buf;
+  struct bufferevent *auth_out_buf;
+  ioa_engine_handle ioa_eng;
+  turn_turnserver server;
+  pthread_t thr;
 };
 
 struct message_to_relay {
-	MESSAGE_TO_RELAY_TYPE t;
-	struct relay_server *relay_server;
-	union {
-		struct socket_message sm;
-		struct cb_socket_message cb_sm;
-		struct cancelled_session_message csm;
-	} m;
+  MESSAGE_TO_RELAY_TYPE t;
+  struct relay_server *relay_server;
+  union {
+    struct socket_message sm;
+    struct cb_socket_message cb_sm;
+    struct cancelled_session_message csm;
+  } m;
 };
 
 struct relay_server;
@@ -132,32 +144,19 @@ typedef int (*ioa_engine_udp_event_handler)(relay_server_handle rs, struct messa
 #define PREDEF_TIMERS_NUM (14)
 extern const int predef_timer_intervals[PREDEF_TIMERS_NUM];
 
-struct _ioa_engine
-{
+struct _ioa_engine {
   super_memory_t *sm;
   struct event_base *event_base;
   int deallocate_eb;
   int verbose;
-  turnipports* tp;
+  turnipports *tp;
   rtcp_map *map_rtcp;
   stun_buffer_list bufs;
-  SSL_CTX *tls_ctx_ssl23;
-  SSL_CTX *tls_ctx_v1_0;
-#if TLSv1_1_SUPPORTED
-  SSL_CTX *tls_ctx_v1_1;
-#if TLSv1_2_SUPPORTED
-  SSL_CTX *tls_ctx_v1_2;
-#endif
-#endif
-#if DTLS_SUPPORTED
+  SSL_CTX *tls_ctx;
   SSL_CTX *dtls_ctx;
-#endif
-#if DTLSv1_2_SUPPORTED
-  SSL_CTX *dtls_ctx_v1_2;
-#endif
   turn_time_t jiffie; /* bandwidth check interval */
   ioa_timer_handle timer_ev;
-  char cmsg[TURN_CMSG_SZ+1];
+  char cmsg[TURN_CMSG_SZ + 1];
   int predef_timer_intervals[PREDEF_TIMERS_NUM];
   struct timeval predef_timers[PREDEF_TIMERS_NUM];
   /* Relays */
@@ -166,77 +165,131 @@ struct _ioa_engine
   size_t relays_number;
   size_t relay_addr_counter;
   ioa_addr *relay_addrs;
+  /* Prometheus hot-path packet counters: accumulated lock-free per engine
+   * (relay thread) and flushed to the shared prom_counter_t objects once per
+   * second from timer_handler, to avoid per-batch lock contention. The
+   * *_flushed fields snapshot the last value pushed to prometheus. */
+  uint64_t prom_packets_processed;
+  uint64_t prom_packets_dropped;
+  uint64_t prom_packets_processed_flushed;
+  uint64_t prom_packets_dropped_flushed;
+#if defined(__linux__)
+  struct ioa_socket_recvmmsg_state *udp_recvmmsg_state;
+  uint64_t udp_recvmmsg_calls;
+  uint64_t udp_recvmmsg_packets;
+  uint64_t udp_recvmmsg_wouldblock;
+  uint64_t udp_recvmmsg_unavailable;
+  uint64_t udp_recvmmsg_no_buffer;
+  uint64_t udp_recvmmsg_hist[IOA_UDP_RECVMMSG_MAX_BATCH + 1];
+  uint64_t udp_recvmmsg_last_report_calls;
+  turn_time_t udp_recvmmsg_last_report_time;
+  /* sendmmsg / UDP-GSO egress batching stats (see --udp-sendmmsg-log) */
+  uint64_t udp_sendmmsg_flushes;                              /* batch flushes carrying >=1 datagram */
+  uint64_t udp_sendmmsg_datagrams;                            /* total datagrams handed to the kernel via batches */
+  uint64_t udp_sendmmsg_gso_flushes;                          /* flushes that coalesced via a single UDP-GSO sendmsg */
+  uint64_t udp_sendmmsg_gso_datagrams;                        /* datagrams coalesced via UDP-GSO */
+  uint64_t udp_sendmmsg_hist[IOA_UDP_SENDMMSG_MAX_BATCH + 1]; /* per-flush occupancy histogram */
+  uint64_t udp_sendmmsg_last_report_flushes;
+  turn_time_t udp_sendmmsg_last_report_time;
+  /* Snapshots of the above batch counters last flushed to prometheus. */
+  uint64_t udp_recvmmsg_calls_prom_flushed;
+  uint64_t udp_recvmmsg_packets_prom_flushed;
+  uint64_t udp_sendmmsg_flushes_prom_flushed;
+  uint64_t udp_sendmmsg_datagrams_prom_flushed;
+  uint64_t udp_sendmmsg_gso_datagrams_prom_flushed;
+#endif
   redis_context_handle rch;
+  /* multiplex-peer (zero-initialised = disabled) */
+  int mp_enabled;
+  int relay_thread_id;
+  ioa_socket_handle mp_sock_v4;
+  ioa_socket_handle mp_sock_v6;
+  uint16_t mp_port_v4;
+  uint16_t mp_port_v6;
+  mp_peer_table mp_table; /* peer_addr:port -> ts_ur_super_session*, capped per session */
 };
 
 #define SOCKET_MAGIC (0xABACADEF)
 
 struct traffic_bytes {
-	band_limit_t jiffie_bytes_read;
-	band_limit_t jiffie_bytes_write;
+  band_limit_t jiffie_bytes_read;
+  band_limit_t jiffie_bytes_write;
 };
 
-struct _ioa_socket
-{
-	evutil_socket_t fd;
-	struct _ioa_socket *parent_s;
-	uint32_t magic;
-	ur_addr_map *sockets_container; /* relay container for UDP sockets */
-	struct bufferevent *bev;
-	ioa_network_buffer_handle defer_nbh;
-	int family;
-	SOCKET_TYPE st;
-	SOCKET_APP_TYPE sat;
-	SSL* ssl;
-	uint32_t ssl_renegs;
-	int in_write;
-	int bound;
-	int local_addr_known;
-	ioa_addr local_addr;
-	int connected;
-	ioa_addr remote_addr;
-	ioa_engine_handle e;
-	struct event *read_event;
-	ioa_net_event_handler read_cb;
-	void *read_ctx;
-	int done;
-	ts_ur_super_session* session;
-	int current_df_relay_flag;
-	/* RFC6156: if IPv6 is involved, do not use DF: */
-	int do_not_use_df;
-	int tobeclosed;
-	int broken;
-	int default_ttl;
-	int current_ttl;
-	int default_tos;
-	int current_tos;
-	stun_buffer_list bufs;
-	turn_time_t jiffie; /* bandwidth check interval */
-	struct traffic_bytes data_traffic;
-	struct traffic_bytes control_traffic;
-	/* RFC 6062 ==>> */
-	//Connection session:
-	tcp_connection *sub_session;
-	//Connect:
-	struct bufferevent *conn_bev;
-	connect_cb conn_cb;
-	void *conn_arg;
-	//Accept:
-	struct evconnlistener *list_ev;
-	accept_cb acb;
-	void *acbarg;
-	/* <<== RFC 6062 */
-	void *special_session;
-	size_t special_session_size;
+struct _ioa_socket {
+  evutil_socket_t fd;
+  struct _ioa_socket *parent_s;
+  uint32_t magic;
+  ur_addr_map *sockets_container; /* relay container for UDP sockets */
+  struct bufferevent *bev;
+  ioa_network_buffer_handle defer_nbh;
+  int family;
+  SOCKET_TYPE st;
+  SOCKET_APP_TYPE sat;
+  SSL *ssl;
+  uint32_t ssl_renegs;
+  int in_write;
+  int bound;
+  int local_addr_known;
+  ioa_addr local_addr;
+  int connected;
+  ioa_addr remote_addr;
+  ioa_engine_handle e;
+  struct event *read_event;
+  ioa_net_event_handler read_cb;
+  void *read_ctx;
+  /* recvmmsg batch-receive eligibility: set once at creation for the shared
+   * fan-in sockets (the client listener and the multiplex-peer relay socket).
+   * Per-session relay sockets stay false, so socket_input_worker() keeps them on
+   * the single-recv path where batching would only add buffer churn. Checked on
+   * the read hot path (Linux only) but kept unconditional to avoid guarding the
+   * set-sites. Defaults to false via the calloc() zero-init every ioa_socket
+   * gets; only the shared sockets flip it true. */
+  bool udp_recvmmsg_eligible;
+  /* DTLS half-open accounting: true from the moment this DTLS child socket is
+   * created (handshake not yet finished) until the handshake completes or the
+   * socket is closed. While true the socket holds one slot in the global
+   * turn_dtls_half_open counter; the flag makes the decrement idempotent and
+   * lets close_ioa_socket() release a slot for a handshake that never
+   * completed. Zero-initialized by the calloc() every ioa_socket gets. */
+  bool dtls_half_open;
+  int done;
+  ts_ur_super_session *session;
+  int current_df_relay_flag;
+  /* RFC6156: if IPv6 is involved, do not use DF: */
+  int do_not_use_df;
+  int tobeclosed;
+  int broken;
+  int default_ttl;
+  int current_ttl;
+  int default_tos;
+  int current_tos;
+  stun_buffer_list bufs;
+  turn_time_t jiffie; /* bandwidth check interval */
+  struct traffic_bytes data_traffic;
+  struct traffic_bytes control_traffic;
+  /* RFC 6062 ==>> */
+  // Connection session:
+  tcp_connection *sub_session;
+  // Connect:
+  struct bufferevent *conn_bev;
+  connect_cb conn_cb;
+  void *conn_arg;
+  // Accept:
+  struct evconnlistener *list_ev;
+  accept_cb acb;
+  void *acbarg;
+  /* <<== RFC 6062 */
+  void *special_session;
+  size_t special_session_size;
 };
 
-typedef struct _timer_event
-{
-	struct event *ev;
-	ioa_engine_handle e;
-	ioa_timer_event_handler cb;
-	void *ctx;
-	char* txt;
+typedef struct _timer_event {
+  struct event *ev;
+  ioa_engine_handle e;
+  ioa_timer_event_handler cb;
+  void *ctx;
+  char *txt;
 } timer_event;
 
 ///////////////////////////////////
@@ -244,24 +297,49 @@ typedef struct _timer_event
 /* realm */
 
 void create_default_realm(void);
-int get_realm_data(char* name, realm_params_t* rp);
+int get_realm_data(char *name, realm_params_t *rp);
+
+/* multiplex-peer */
+
+int init_multiplex_peer(ioa_engine_handle e, int thread_id, uint16_t base_port, size_t max_peers_per_session);
+/* Returns MP_REGISTER_OK, MP_REGISTER_CONFLICT or MP_REGISTER_LIMIT. */
+int mp_register_peer(ioa_engine_handle e, const ioa_addr *peer_addr, void *turn_session);
+void mp_deregister_peer(ioa_engine_handle e, const ioa_addr *peer_addr, void *turn_session);
+void mp_deregister_permission_peers(ioa_engine_handle e, const ioa_addr *peer_addr, void *turn_session);
+void mp_deregister_session_peers(ioa_engine_handle e, void *turn_session, int address_family);
+ioa_socket_handle mp_get_socket(ioa_engine_handle e, int af);
+uint16_t mp_get_port(ioa_engine_handle e, int af);
+
+/* DTLS half-open handshake cap (state-exhaustion mitigation, GHSA-5x2p-4vqj-f6m4).
+ * A DTLS ClientHello from a new source creates a per-peer SSL + socket + session
+ * before the source has proven return-routable via the DTLS cookie, so a flood
+ * of unanswered ClientHellos accumulates state. These bound the number of
+ * concurrent half-open (handshake-incomplete) DTLS sockets across all relay
+ * threads. turn_dtls_half_open_try_inc() reserves a slot if the live count is
+ * below cap (false = cap reached, caller must drop); turn_dtls_half_open_dec()
+ * releases one; the count is exposed for logging/tests. */
+bool turn_dtls_half_open_try_inc(uint32_t cap);
+void turn_dtls_half_open_dec(void);
+uint32_t turn_dtls_half_open_count(void);
 
 /* engine handling */
 
-ioa_engine_handle create_ioa_engine(super_memory_t *sm,
-				struct event_base *eb, turnipports* tp,
-				const char* relay_if,
-				size_t relays_number, char **relay_addrs, int default_relays,
-				int verbose
+ioa_engine_handle create_ioa_engine(super_memory_t *sm, struct event_base *eb, turnipports *tp, const char *relay_if,
+                                    size_t relays_number, char **relay_addrs, int default_relays, int verbose
 #if !defined(TURN_NO_HIREDIS)
-				,const char* redis_report_connection_string
+                                    ,
+                                    redis_stats_db_t *redis_stats_db
 #endif
-				);
+);
 
 void ioa_engine_set_rtcp_map(ioa_engine_handle e, rtcp_map *rtcpmap);
 
-ioa_socket_handle create_ioa_socket_from_fd(ioa_engine_handle e, ioa_socket_raw fd, ioa_socket_handle parent_s, SOCKET_TYPE st, SOCKET_APP_TYPE sat, const ioa_addr *remote_addr, const ioa_addr *local_addr);
-ioa_socket_handle create_ioa_socket_from_ssl(ioa_engine_handle e, ioa_socket_handle parent_s, SSL* ssl, SOCKET_TYPE st, SOCKET_APP_TYPE sat, const ioa_addr *remote_addr, const ioa_addr *local_addr);
+ioa_socket_handle create_ioa_socket_from_fd(ioa_engine_handle e, ioa_socket_raw fd, ioa_socket_handle parent_s,
+                                            SOCKET_TYPE st, SOCKET_APP_TYPE sat, const ioa_addr *remote_addr,
+                                            const ioa_addr *local_addr);
+ioa_socket_handle create_ioa_socket_from_ssl(ioa_engine_handle e, ioa_socket_handle parent_s, SSL *ssl, SOCKET_TYPE st,
+                                             SOCKET_APP_TYPE sat, const ioa_addr *remote_addr,
+                                             const ioa_addr *local_addr);
 
 int get_a_local_relay(int family, ioa_addr *relay_addr);
 
@@ -273,9 +351,34 @@ void delete_socket_from_map(ioa_socket_handle s);
 
 int is_connreset(void);
 int would_block(void);
-int udp_send(ioa_socket_handle s, const ioa_addr* dest_addr, const char* buffer, int len);
-int udp_recvfrom(evutil_socket_t fd, ioa_addr* orig_addr, const ioa_addr *like_addr, char* buffer, int buf_size, int *ttl, int *tos, char *ecmsg, int flags, uint32_t *errcode);
-int ssl_read(evutil_socket_t fd, SSL* ssl, ioa_network_buffer_handle nbh, int verbose);
+void udp_sendmmsg_batch_begin(void);
+void udp_sendmmsg_batch_end(void);
+void turn_reset_socket_ttl_tos(ioa_socket_handle s);
+int udp_send(ioa_socket_handle s, const ioa_addr *dest_addr, const char *buffer, int len);
+int udp_recvfrom(evutil_socket_t fd, ioa_addr *orig_addr, const ioa_addr *like_addr, char *buffer, int buf_size,
+                 int *ttl, int *tos, char *ecmsg, int flags, uint32_t *errcode);
+int ssl_read(evutil_socket_t fd, SSL *ssl, ioa_network_buffer_handle nbh, int verbose);
+
+#if defined(__linux__)
+void ioa_init_recvmmsg_hdr(struct mmsghdr *msg, struct iovec *iov, ioa_addr *src_addr, char *cmsg, size_t cmsg_len,
+                           socklen_t slen, void *buf, size_t len);
+#endif
+
+#if !defined(_MSC_VER) && defined(CMSG_SPACE)
+void ioa_parse_udp_recvmsg_cmsg(struct msghdr *msg, int *ttl, int *tos, uint32_t *errcode);
+#endif
+
+/* Accumulate processed/dropped packet counts for prometheus, lock-free, on the
+ * owning relay thread. Flushed to the shared prom counters by timer_handler. */
+void ioa_engine_record_packets(ioa_engine_handle e, uint32_t processed, uint32_t dropped);
+
+#if defined(__linux__)
+void ioa_engine_record_udp_recvmmsg_batch(ioa_engine_handle e, int rc);
+void ioa_engine_record_udp_recvmmsg_wouldblock(ioa_engine_handle e);
+void ioa_engine_record_udp_recvmmsg_unavailable(ioa_engine_handle e);
+void ioa_engine_record_udp_recvmmsg_no_buffer(ioa_engine_handle e);
+void ioa_engine_record_udp_sendmmsg_flush(ioa_engine_handle e, unsigned int count, unsigned int gso_count);
+#endif
 
 int set_raw_socket_ttl_options(evutil_socket_t fd, int family);
 int set_raw_socket_tos_options(evutil_socket_t fd, int family);
@@ -293,8 +396,9 @@ int ioa_socket_check_bandwidth(ioa_socket_handle s, ioa_network_buffer_handle nb
 
 ///////////////////////// SUPER MEMORY ////////
 
-#define allocate_super_memory_engine(e,size) allocate_super_memory_engine_func(e, size, __FILE__, __FUNCTION__, __LINE__)
-void* allocate_super_memory_engine_func(ioa_engine_handle e, size_t size, const char* file, const char* func, int line);
+#define allocate_super_memory_engine(e, size)                                                                          \
+  allocate_super_memory_engine_func(e, size, __FILE__, __FUNCTION__, __LINE__)
+void *allocate_super_memory_engine_func(ioa_engine_handle e, size_t size, const char *file, const char *func, int line);
 
 /////////////////////////////////////////////////
 
